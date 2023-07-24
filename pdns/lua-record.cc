@@ -1047,7 +1047,7 @@ static void setupLuaRecords(LuaContext& lua)
       return doCompare(var, res, [](const std::string& a, const std::string& b) {
           return !strcasecmp(a.c_str(), b.c_str());
         });
-
+      return res;
     });
 
 
@@ -1056,33 +1056,35 @@ static void setupLuaRecords(LuaContext& lua)
       return doCompare(var, res, [](const std::string& a, const std::string& b) {
           return !strcasecmp(a.c_str(), b.c_str());
         });
-
+     return res;
     });
   lua.writeFunction("wmdomain", [](const combovar_t& var) {
   string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::domain);
   return doCompare(var, res, [](const std::string& a, const std::string& b) {
       return !strcasecmp(a.c_str(), b.c_str());
     });
+    return res;
   });
   lua.writeFunction("wmisp", [](const combovar_t& var) {
   string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::isp);
   return doCompare(var, res, [](const std::string& a, const std::string& b) {
       return !strcasecmp(a.c_str(), b.c_str());
     });
+    return res;
   });
   lua.writeFunction("wmaso", [](const combovar_t& var) {
   string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::aso);
   return doCompare(var, res, [](const std::string& a, const std::string& b) {
       return !strcasecmp(a.c_str(), b.c_str());
     });
-
+    return res;
   });
   lua.writeFunction("wmorg", [](const combovar_t& var) {
   string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::org);
   return doCompare(var, res, [](const std::string& a, const std::string& b) {
       return !strcasecmp(a.c_str(), b.c_str());
     });
-
+    return res;
   });
 
   lua.writeFunction("wmasn2", [](const combovar_t& var) {
@@ -1090,6 +1092,7 @@ static void setupLuaRecords(LuaContext& lua)
     return doCompare(var, res, [](const std::string& a, const std::string& b) {
       return !strcasecmp(a.c_str(), b.c_str());
     });
+    return res;
   });
   lua.writeFunction("regionCode", []() {
       string unknown("unknown");
