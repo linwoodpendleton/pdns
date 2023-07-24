@@ -49,9 +49,9 @@ public:
     if ((ec = MMDB_open(fname.c_str(), flags, &d_s)) < 0)
       throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
     if ((ec = MMDB_open(fname_domain.c_str(), flags, &d_domain)) < 0)
-      throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
+      throw PDNSException(string("Cannot open ") + fname_domain + string(": ") + string(MMDB_strerror(ec)));
     if ((ec = MMDB_open(fname_isp.c_str(), flags, &d_isp)) < 0)
-      throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
+      throw PDNSException(string("Cannot open ") + fname_isp + string(": ") + string(MMDB_strerror(ec)));
     d_lang = language;
     g_log << Logger::Debug << "Opened MMDB database " << fname << "(type: " << d_s.metadata.database_type << " version: " << d_s.metadata.binary_format_major_version << "." << d_s.metadata.binary_format_minor_version << ")" << endl;
   }
