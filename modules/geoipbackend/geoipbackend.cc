@@ -129,11 +129,21 @@ void GeoIPBackend::initialize()
 
   if (getArg("database-files").empty() == false) {
     vector<string> files;
+    vector<string> files_domain;
+    vector<string> files_isp;
     stringtok(files, getArg("database-files"), " ,\t\r\n");
+    stringtok(files_domain, getArg("database-domain-files"), " ,\t\r\n");
+    stringtok(files_isp, getArg("database-isp-files"), " ,\t\r\n");
     for (auto const& file : files) {
-      s_geoip_files.push_back(GeoIPInterface::makeInterface(file));
+      for (auto const& file_domain : files_domain) {
+        for (auto const& file_isp : files_isp) {
+          s_geoip_files.push_back(GeoIPInterface::makeInterface(file,file_domain,file_isp));
+        }
+      }
     }
   }
+
+  
 
   if (s_geoip_files.empty())
     g_log << Logger::Warning << "No GeoIP database files loaded!" << endl;
@@ -593,6 +603,36 @@ static string queryGeoIP(const Netmask& addr, GeoIPInterface::GeoIPQueryAttribut
       else
         found = gi->queryLocation(gl, ip, lat, lon, alt, prec);
       val = std::to_string(lat) + " " + std::to_string(lon);
+      break;
+    case GeoIPInterface::domain:
+      if (addr.isIPv6())
+        found = gi->queryDomainV6(val, gl, ip);
+      else
+        found = gi->queryDomain(val, gl, ip);
+      break;
+    case GeoIPInterface::isp:
+      if (addr.isIPv6())
+        found = gi->queryISPV6(val, gl, ip);
+      else
+        found = gi->queryISP(val, gl, ip);
+      break;
+    case GeoIPInterface::aso:
+      if (addr.isIPv6())
+        found = gi->queryASOV6(val, gl, ip);
+      else
+        found = gi->queryASO(val, gl, ip);
+      break;
+    case GeoIPInterface::asn2:
+      if (addr.isIPv6())
+        found = gi->queryASN2V6(val, gl, ip);
+      else
+        found = gi->queryASN2(val, gl, ip);
+      break;
+    case GeoIPInterface::org:
+      if (addr.isIPv6())
+        found = gi->queryORGV6(val, gl, ip);
+      else
+        found = gi->queryORG(val, gl, ip);
       break;
     }
 

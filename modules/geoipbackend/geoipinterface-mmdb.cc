@@ -25,14 +25,14 @@
 #include "geoipbackend.hh"
 #include "geoipinterface.hh"
 
-#ifdef HAVE_MMDB
+// #ifdef HAVE_MMDB
 
 #include "maxminddb.h"
 
 class GeoIPInterfaceMMDB : public GeoIPInterface
 {
 public:
-  GeoIPInterfaceMMDB(const string& fname, const string& modeStr, const string& language)
+  GeoIPInterfaceMMDB(const string& fname, const string& fname_domain, const string& fname_isp, const string& modeStr, const string& language)
   {
     int ec;
     int flags = 0;
@@ -47,6 +47,10 @@ public:
       throw PDNSException(string("Unsupported mode ") + modeStr + ("for geoipbackend-mmdb"));
     memset(&d_s, 0, sizeof(d_s));
     if ((ec = MMDB_open(fname.c_str(), flags, &d_s)) < 0)
+      throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
+    if ((ec = MMDB_open(fname_domain.c_str(), flags, &d_domain)) < 0)
+      throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
+    if ((ec = MMDB_open(fname_isp.c_str(), flags, &d_isp)) < 0)
       throw PDNSException(string("Cannot open ") + fname + string(": ") + string(MMDB_strerror(ec)));
     d_lang = language;
     g_log << Logger::Debug << "Opened MMDB database " << fname << "(type: " << d_s.metadata.database_type << " version: " << d_s.metadata.binary_format_major_version << "." << d_s.metadata.binary_format_minor_version << ")" << endl;
@@ -246,10 +250,190 @@ public:
     return true;
   }
 
-  ~GeoIPInterfaceMMDB() { MMDB_close(&d_s); };
+
+  bool queryDomain(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupDomain(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "domain", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryDomainV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupDomain(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "domain", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+
+  bool queryASO(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryASOV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryASO(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryASOV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+
+  bool queryISP(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "isp", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryISPV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "isp", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+
+  bool queryISP(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "isp", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryISPV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "isp", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+
+  bool queryORG(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryORGV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "organization", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryASN2(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, false, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_number", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+  bool queryASN2V6(string& ret, GeoIPNetmask& gl, const string& ip) override
+  {
+    MMDB_entry_data_s data;
+    MMDB_lookup_result_s res;
+    if (!mmdbLookupISP(ip, true, gl, res))
+      return false;
+    if (MMDB_get_value(&res.entry, &data, "autonomous_system_number", NULL) != MMDB_SUCCESS || !data.has_data)
+      return false;
+    ret = string(data.utf8_string, data.data_size);
+    return true;
+  }
+
+
+  ~GeoIPInterfaceMMDB() { 
+    MMDB_close(&d_domain)
+    MMDB_close(&d_isp)
+    MMDB_close(&d_s); 
+    };
 
 private:
   MMDB_s d_s;
+  MMDB_s d_domain;
+  MMDB_s d_isp;
   string d_lang;
 
   bool mmdbLookup(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
@@ -273,7 +457,50 @@ private:
   }
 };
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const map<string, string>& opts)
+bool mmdbLookupDomain(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
+  {
+    int gai_ec = 0, mmdb_ec = 0;
+    res = MMDB_lookup_string(&d_domain, ip.c_str(), &gai_ec, &mmdb_ec);
+
+    if (gai_ec != 0)
+      g_log << Logger::Warning << "MMDB_lookup_string(" << ip << ") failed: " << gai_strerror(gai_ec) << endl;
+    else if (mmdb_ec != MMDB_SUCCESS)
+      g_log << Logger::Warning << "MMDB_lookup_string(" << ip << ") failed: " << MMDB_strerror(mmdb_ec) << endl;
+    else if (res.found_entry) {
+      gl.netmask = res.netmask;
+      /* If it's a IPv6 database, IPv4 netmasks are reduced from 128, so we need to deduct
+         96 to get from [96,128] => [0,32] range */
+      if (!v6 && gl.netmask > 32)
+        gl.netmask -= 96;
+      return true;
+    }
+    return false;
+  }
+};
+
+
+bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
+  {
+    int gai_ec = 0, mmdb_ec = 0;
+    res = MMDB_lookup_string(&d_isp, ip.c_str(), &gai_ec, &mmdb_ec);
+
+    if (gai_ec != 0)
+      g_log << Logger::Warning << "MMDB_lookup_string(" << ip << ") failed: " << gai_strerror(gai_ec) << endl;
+    else if (mmdb_ec != MMDB_SUCCESS)
+      g_log << Logger::Warning << "MMDB_lookup_string(" << ip << ") failed: " << MMDB_strerror(mmdb_ec) << endl;
+    else if (res.found_entry) {
+      gl.netmask = res.netmask;
+      /* If it's a IPv6 database, IPv4 netmasks are reduced from 128, so we need to deduct
+         96 to get from [96,128] => [0,32] range */
+      if (!v6 && gl.netmask > 32)
+        gl.netmask -= 96;
+      return true;
+    }
+    return false;
+  }
+};
+
+unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp ,const string& fnameconst map<string, string>& opts)
 {
   string mode = "";
   string language = "en";
@@ -283,14 +510,14 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname
   const auto& opt_lang = opts.find("language");
   if (opt_lang != opts.end())
     language = opt_lang->second;
-  return std::make_unique<GeoIPInterfaceMMDB>(fname, mode, language);
+  return std::make_unique<GeoIPInterfaceMMDB>(fname,fname_domain, fname_isp, mode, language);
 }
 
-#else
+// #else
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const map<string, string>& opts)
-{
-  throw PDNSException("libmaxminddb support not compiled in");
-}
+// unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const string& fname_domain, [[maybe_unused]] const string& fname_isp, [[maybe_unused]] const map<string, string>& opts)
+// {
+//   throw PDNSException("libmaxminddb support not compiled in");
+// }
 
-#endif
+// #endif

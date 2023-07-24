@@ -36,7 +36,12 @@ public:
     Country2,
     Name,
     Region,
-    Location
+    Location,
+    domain,
+    isp,
+    aso,
+    org,
+    asn2
   };
 
   virtual bool queryCountry(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
@@ -62,11 +67,24 @@ public:
                                boost::optional<int>& alt, boost::optional<int>& prec)
     = 0;
 
+
+
+  virtual bool queryDomain(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryDomainV6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryISP(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryISPV6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryASO(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryASOV6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryORG(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryORGV6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryASN2(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+  virtual bool queryASN2V6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
+
   virtual ~GeoIPInterface() {}
 
-  static unique_ptr<GeoIPInterface> makeInterface(const string& dbStr);
+  static unique_ptr<GeoIPInterface> GeoIPInterface::makeInterface(const string& dbStr,const string& db_domain_Str,const string& db_isp_Str);
 
 private:
-  static unique_ptr<GeoIPInterface> makeMMDBInterface(const string& fname, const map<string, string>& opts);
+  static unique_ptr<GeoIPInterface> makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts);
   static unique_ptr<GeoIPInterface> makeDATInterface(const string& fname, const map<string, string>& opts);
 };
