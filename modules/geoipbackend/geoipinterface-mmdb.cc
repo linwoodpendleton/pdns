@@ -54,8 +54,8 @@ public:
       throw PDNSException(string("Cannot open ") + fname_isp + string(": ") + string(MMDB_strerror(ec)));
     d_lang = language;
     g_log << Logger::Debug << "Opened MMDB database " << fname << "(type: " << d_s.metadata.database_type << " version: " << d_s.metadata.binary_format_major_version << "." << d_s.metadata.binary_format_minor_version << ")" << endl;
-    g_log << Logger::Debug << "Opened MMDB database " << fname << "(type: " << d_domain.metadata.database_type << " version: " << d_domain.metadata.binary_format_major_version << "." << d_domain.metadata.binary_format_minor_version << ")" << endl;
-    g_log << Logger::Debug << "Opened MMDB database " << fname << "(type: " << d_isp.metadata.database_type << " version: " << d_isp.metadata.binary_format_major_version << "." << d_isp.metadata.binary_format_minor_version << ")" << endl;
+    g_log << Logger::Debug << "Opened MMDB database " << fname_domain << "(type: " << d_domain.metadata.database_type << " version: " << d_domain.metadata.binary_format_major_version << "." << d_domain.metadata.binary_format_minor_version << ")" << endl;
+    g_log << Logger::Debug << "Opened MMDB database " << fname_isp << "(type: " << d_isp.metadata.database_type << " version: " << d_isp.metadata.binary_format_major_version << "." << d_isp.metadata.binary_format_minor_version << ")" << endl;
   }
 
   bool queryCountry(string& ret, GeoIPNetmask& gl, const string& ip) override
