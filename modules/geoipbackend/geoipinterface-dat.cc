@@ -470,7 +470,7 @@ private:
   unique_ptr<GeoIP, geoip_deleter> d_gi;
 };
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts)
+unique_ptr<GeoIPInterfaceDAT> GeoIPInterface::makeDATInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts)
 {
   string mode = "standard";
   const auto& opt = opts.find("mode");
