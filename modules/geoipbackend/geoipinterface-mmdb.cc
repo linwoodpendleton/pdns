@@ -449,10 +449,7 @@ private:
     }
     return false;
   }
-};
-
-
-bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
+  bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
   {
     int gai_ec = 0, mmdb_ec = 0;
     res = MMDB_lookup_string(&d_isp, ip.c_str(), &gai_ec, &mmdb_ec);
@@ -472,6 +469,10 @@ bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_resu
     return false;
   }
 };
+
+
+
+
 
 
 
