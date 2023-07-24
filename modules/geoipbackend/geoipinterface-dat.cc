@@ -61,7 +61,7 @@ struct geoipregion_deleter
 class GeoIPInterfaceDAT : public GeoIPInterface
 {
 public:
-  GeoIPInterfaceDAT(const string& fname, const string& modeStr)
+  GeoIPInterfaceDAT(const string& fname, const string& fname_domain, const string& fname_isp, const string& modeStr)
   {
     int flags;
     if (modeStr == "standard")
@@ -470,18 +470,18 @@ private:
   unique_ptr<GeoIP, geoip_deleter> d_gi;
 };
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface(const string& fname, const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts)
 {
   string mode = "standard";
   const auto& opt = opts.find("mode");
   if (opt != opts.end())
     mode = opt->second;
-  return std::make_unique<GeoIPInterfaceDAT>(fname, mode);
+  return std::make_unique<GeoIPInterfaceDAT>(fname,fname_domain,fname_isp, mode);
 }
 
 #else
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface([[maybe_unused]] const string& fname,[[maybe_unused]] const string& fname1,[[maybe_unused]] const string& fname2, [[maybe_unused]] const map<string, string>& opts)
 {
   throw PDNSException("libGeoIP support not compiled in");
 }
