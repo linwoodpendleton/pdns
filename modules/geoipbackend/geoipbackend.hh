@@ -33,7 +33,7 @@
 #include "pdns/dns.hh"
 #include "pdns/dnsbackend.hh"
 #include "pdns/lock.hh"
-
+#define MAX_ARRAY_SIZE 100
 class GeoIPInterface;
 
 struct GeoIPDomain;
