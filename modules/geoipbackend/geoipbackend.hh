@@ -49,7 +49,7 @@ public:
   GeoIPBackend(const std::string& suffix = "");
   ~GeoIPBackend();
   static char* chinamobile_column_data[MAX_ARRAY_SIZE];
-  static int chinamobile_column_index = 0;
+  static int chinamobile_column_index;
   void lookup(const QType& qtype, const DNSName& qdomain, int zoneId, DNSPacket* pkt_p = nullptr) override;
   bool list(const DNSName& /* target */, int /* domain_id */, bool /* include_disabled */ = false) override { return false; } // not supported
   bool get(DNSResourceRecord& r) override;
