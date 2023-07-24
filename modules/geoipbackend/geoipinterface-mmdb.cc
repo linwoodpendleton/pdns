@@ -378,7 +378,7 @@ public:
 
   ~GeoIPInterfaceMMDB() { 
     MMDB_close(&d_domain);
-    MMDB_close(&d_isp)
+    MMDB_close(&d_isp);
     MMDB_close(&d_s); 
     };
 
