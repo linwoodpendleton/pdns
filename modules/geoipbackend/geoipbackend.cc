@@ -1174,6 +1174,8 @@ public:
   {
     declare(suffix, "zones-file", "YAML file to load zone(s) configuration", "");
     declare(suffix, "database-files", "File(s) to load geoip data from ([driver:]path[;opt=value]", "");
+    declare(suffix, "database-domain-files", "File(s) to load geoip data from ([driver:]path[;opt=value]", "");
+    declare(suffix, "database-isp-files", "File(s) to load geoip data from ([driver:]path[;opt=value]", "");
     declare(suffix, "dnssec-keydir", "Directory to hold dnssec keys (also turns DNSSEC on)", "");
   }
 
