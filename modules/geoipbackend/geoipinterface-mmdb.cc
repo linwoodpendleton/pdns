@@ -25,7 +25,7 @@
 #include "geoipbackend.hh"
 #include "geoipinterface.hh"
 
-// #ifdef HAVE_MMDB
+#ifdef HAVE_MMDB
 
 #include "maxminddb.h"
 
@@ -513,11 +513,11 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname
   return std::make_unique<GeoIPInterfaceMMDB>(fname,fname_domain, fname_isp, mode, language);
 }
 
-// #else
+#else
 
-// unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const string& fname_domain, [[maybe_unused]] const string& fname_isp, [[maybe_unused]] const map<string, string>& opts)
-// {
-//   throw PDNSException("libmaxminddb support not compiled in");
-// }
+unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const string& fname_domain, [[maybe_unused]] const string& fname_isp, [[maybe_unused]] const map<string, string>& opts)
+{
+  throw PDNSException("libmaxminddb support not compiled in");
+}
 
-// #endif
+#endif
