@@ -79,7 +79,7 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeInterface(const string& dbStr,con
   }
 
   if (driver == "dat") {
-    return makeDATInterface(filename, opts);
+    return makeDATInterface(filename,filename_domain,filename_isp, opts);
   }
   else if (driver == "mmdb") {
     return makeMMDBInterface(filename,filename_domain,filename_isp, opts);
