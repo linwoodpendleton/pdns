@@ -454,7 +454,7 @@ private:
 
 
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp  const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp , const map<string, string>& opts)
 {
   string mode = "";
   string language = "en";
