@@ -10,5 +10,5 @@ libgeoipbackend_la_SOURCES = \
 	geoipinterface-mmdb.cc \
 	geoipinterface.cc geoipinterface.hh
 
-libgeoipbackend_la_LDFLAGS = -module -avoid-version 
+libgeoipbackend_la_LDFLAGS = -module -avoid-version $(LIBCRYPTO_LDFLAGS) $(LIBSSL_LDFLAGS)
 libgeoipbackend_la_LIBADD = $(YAML_LIBS) $(GEOIP_LIBS) $(MMDB_LIBS) $(MYSQL_LIBS)
