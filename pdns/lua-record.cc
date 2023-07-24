@@ -1041,6 +1041,23 @@ static void setupLuaRecords(LuaContext& lua)
       }
       return res;
     });
+  
+  lua.writeFunction("wmcity", [](const combovar_t& var) {
+      string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::City);
+      return doCompare(var, res, [](const std::string& a, const std::string& b) {
+          return !strcasecmp(a.c_str(), b.c_str());
+        });
+
+    });
+  lua.writeFunction("countryCode", []() {
+      string unknown("unknown");
+      string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Country2);
+      if ( res == unknown ) {
+       return std::string("--");
+      }
+      return res;
+    });
+
   lua.writeFunction("region", [](const combovar_t& var) {
       string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Region);
       return doCompare(var, res, [](const std::string& a, const std::string& b) {
