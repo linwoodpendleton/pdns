@@ -44,8 +44,9 @@ MYSQL_ROW row;
 
 
 ReadWriteLock GeoIPBackend::s_state_lock;
-
-void query_and_store(char* query, char* host, char* user, char* password, char* database) {
+char* GeoIPBackend::chinamobile_column_data[MAX_ARRAY_SIZE];
+int GeoIPBackend::chinamobile_column_index = 0;
+void GeoIPBackend::query_and_store(char* query, char* host, char* user, char* password, char* database) {
     mysql = mysql_init(NULL);
     if (!mysql_real_connect(mysql, host, user, password, database, 0, NULL, 0)) {
         fprintf(stderr, "%s\n", mysql_error(mysql));
