@@ -1048,7 +1048,7 @@ static void setupLuaRecords(LuaContext& lua)
     });
 
 
-  lua.writeFunction("region", [](const combovar_t& var) {
+  lua.writeFunction("region", []() {
       string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Region);
       return res;
     });
