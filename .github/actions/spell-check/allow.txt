@@ -1254,6 +1254,11 @@ geoipinterface
 geoipkeydir
 geoiploader
 geoiplookup
+wmdomain
+wmisp
+wmaso
+wmorg
+wmasn2
 geoiprecord
 geoipregion
 geoipregionip

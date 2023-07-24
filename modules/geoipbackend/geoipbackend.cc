@@ -32,8 +32,48 @@
 #include <boost/format.hpp>
 #include <fstream>
 #include <yaml-cpp/yaml.h>
+#include <mysql.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <time.h>
+#define MAX_ARRAY_SIZE 100
+
+MYSQL *mysql;
+MYSQL_RES *res;
+MYSQL_ROW row;
+
+
 
 ReadWriteLock GeoIPBackend::s_state_lock;
+
+void query_and_store(char* query, char* host, char* user, char* password, char* database) {
+    mysql = mysql_init(NULL);
+    if (!mysql_real_connect(mysql, host, user, password, database, 0, NULL, 0)) {
+        fprintf(stderr, "%s\n", mysql_error(mysql));
+        exit(1);
+    }
+
+    if (mysql_query(mysql, query)) {
+        fprintf(stderr, "%s\n", mysql_error(mysql));
+        exit(1);
+    }
+
+    res = mysql_use_result(mysql);
+
+    while ((row = mysql_fetch_row(res)) != NULL) {
+        if(column_index < MAX_ARRAY_SIZE){
+            chinamobile_column_data[column_index] = row[0];  // store the first column data
+            column_index++;
+        }
+    }
+
+    mysql_free_result(res);
+    mysql_close(mysql);
+}
+
+
+
+
 
 struct GeoIPDNSResourceRecord : DNSResourceRecord
 {

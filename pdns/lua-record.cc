@@ -1004,44 +1004,6 @@ static void setupLuaRecords(LuaContext& lua)
     return getGeo(ip, attr);
   });
 
-
-  lua.writeFunction("wmdomain", [](const combovar_t& var) {
-  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::domain);
-  return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
-
-  });
-  lua.writeFunction("wmisp", [](const combovar_t& var) {
-  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::isp);
-  return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
-
-  });
-  lua.writeFunction("wmaso", [](const combovar_t& var) {
-  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::aso);
-  return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
-
-  });
-  lua.writeFunction("wmorg", [](const combovar_t& var) {
-  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::org);
-  return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
-
-  });
-
-  lua.writeFunction("wmasn2", [](const combovar_t& var) {
-  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::asn2);
-  return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
-
-  });
-
   typedef const boost::variant<string,vector<pair<int,string> > > combovar_t;
 
   lua.writeFunction("asnum", [](const combovar_t& asns) {
@@ -1086,6 +1048,39 @@ static void setupLuaRecords(LuaContext& lua)
         });
 
     });
+  lua.writeFunction("wmdomain", [](const combovar_t& var) {
+  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::domain);
+  return doCompare(var, res, [](const std::string& a, const std::string& b) {
+      return !strcasecmp(a.c_str(), b.c_str());
+    });
+  });
+  lua.writeFunction("wmisp", [](const combovar_t& var) {
+  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::isp);
+  return doCompare(var, res, [](const std::string& a, const std::string& b) {
+      return !strcasecmp(a.c_str(), b.c_str());
+    });
+  });
+  lua.writeFunction("wmaso", [](const combovar_t& var) {
+  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::aso);
+  return doCompare(var, res, [](const std::string& a, const std::string& b) {
+      return !strcasecmp(a.c_str(), b.c_str());
+    });
+
+  });
+  lua.writeFunction("wmorg", [](const combovar_t& var) {
+  string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::org);
+  return doCompare(var, res, [](const std::string& a, const std::string& b) {
+      return !strcasecmp(a.c_str(), b.c_str());
+    });
+
+  });
+
+  lua.writeFunction("wmasn2", [](const combovar_t& var) {
+    string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::asn2);
+    return doCompare(var, res, [](const std::string& a, const std::string& b) {
+      return !strcasecmp(a.c_str(), b.c_str());
+    });
+  });
   lua.writeFunction("regionCode", []() {
       string unknown("unknown");
       string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Region);
