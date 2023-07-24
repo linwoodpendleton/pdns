@@ -419,6 +419,37 @@ Helper functions
   Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
   If the two letter ISO country code is unknown "--" will be returned.
 
+  .. function:: wmcity()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
+
+  .. function:: wmdomain()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
+  .. function:: wmisp()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
+  .. function:: wmaso()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
+  .. function:: wmorg()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
+  .. function:: wmasn2()
+
+  Returns two letter ISO country code based ``bestwho`` IP address, as described in :doc:`../backends/geoip`.
+  If the two letter ISO country code is unknown "--" will be returned.
+
 .. function:: region(region)
               region(regions)
 
