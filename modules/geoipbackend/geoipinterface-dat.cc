@@ -431,6 +431,65 @@ public:
     return false;
   }
 
+
+  bool queryDomain(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+    bool queryDomainV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+    bool queryISP(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+    bool queryISPV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+     bool queryASO(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+    bool queryASOV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+    bool queryORG(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+    bool queryORGV6(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+    bool queryASN2(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+    bool queryASN2V6(string& ret, GeoIPNetmask& gl, const string& ip) override
+    {
+      
+      return false;
+    }
+
+
+
   bool queryLocationV6(GeoIPNetmask& gl, const string& ip,
                        double& latitude, double& longitude,
                        boost::optional<int>& /* alt */, boost::optional<int>& /* prec */) override
