@@ -32,7 +32,6 @@
 #include <boost/format.hpp>
 #include <fstream>
 #include <yaml-cpp/yaml.h>
-#include <mysql.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
