@@ -430,9 +430,7 @@ private:
     }
     return false;
   }
-};
-
-bool mmdbLookupDomain(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
+  bool mmdbLookupDomain(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_result_s& res)
   {
     int gai_ec = 0, mmdb_ec = 0;
     res = MMDB_lookup_string(&d_domain, ip.c_str(), &gai_ec, &mmdb_ec);
@@ -474,6 +472,9 @@ bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_resu
     return false;
   }
 };
+};
+
+
 
 unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp ,const string& fnameconst map<string, string>& opts)
 {
