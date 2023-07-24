@@ -60,9 +60,9 @@ void query_and_store(char* query, char* host, char* user, char* password, char* 
     res = mysql_use_result(mysql);
 
     while ((row = mysql_fetch_row(res)) != NULL) {
-        if(chinamobile_column_index < MAX_ARRAY_SIZE){
-            chinamobile_column_data[chinamobile_column_index] = row[0];  // store the first column data
-            chinamobile_column_index++;
+        if(GeoIPBackend::chinamobile_column_index < MAX_ARRAY_SIZE){
+            GeoIPBackend::chinamobile_column_data[GeoIPBackend::chinamobile_column_index] = row[0];  // store the first column data
+            GeoIPBackend::chinamobile_column_index++;
         }
     }
 
