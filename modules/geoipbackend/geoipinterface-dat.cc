@@ -470,13 +470,13 @@ private:
   unique_ptr<GeoIP, geoip_deleter> d_gi;
 };
 
-unique_ptr<GeoIPInterfaceDAT> GeoIPInterfaceDAT::makeDATInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeDATInterface(const string& fname,const string& fname1,const string& fname2, const map<string, string>& opts)
 {
   string mode = "standard";
   const auto& opt = opts.find("mode");
   if (opt != opts.end())
     mode = opt->second;
-  return std::make_unique<GeoIPInterfaceDAT>(fname,fname_domain,fname_isp, mode);
+  return std::make_unique<GeoIPInterfaceDAT>(fname,fname1,fname2, mode);
 }
 
 #else
