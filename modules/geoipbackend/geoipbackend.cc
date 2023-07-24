@@ -44,32 +44,32 @@ MYSQL_ROW row;
 
 
 ReadWriteLock GeoIPBackend::s_state_lock;
-char* GeoIPBackend::chinamobile_column_data[MAX_ARRAY_SIZE];
-int GeoIPBackend::chinamobile_column_index = 0;
-void GeoIPBackend::query_and_store(char* query, char* host, char* user, char* password, char* database) {
-    mysql = mysql_init(NULL);
-    if (!mysql_real_connect(mysql, host, user, password, database, 0, NULL, 0)) {
-        fprintf(stderr, "%s\n", mysql_error(mysql));
-        exit(1);
-    }
+// char* GeoIPBackend::chinamobile_column_data[MAX_ARRAY_SIZE];
+// int GeoIPBackend::chinamobile_column_index = 0;
+// void GeoIPBackend::query_and_store(char* query, char* host, char* user, char* password, char* database) {
+//     mysql = mysql_init(NULL);
+//     if (!mysql_real_connect(mysql, host, user, password, database, 0, NULL, 0)) {
+//         fprintf(stderr, "%s\n", mysql_error(mysql));
+//         exit(1);
+//     }
 
-    if (mysql_query(mysql, query)) {
-        fprintf(stderr, "%s\n", mysql_error(mysql));
-        exit(1);
-    }
+//     if (mysql_query(mysql, query)) {
+//         fprintf(stderr, "%s\n", mysql_error(mysql));
+//         exit(1);
+//     }
 
-    res = mysql_use_result(mysql);
+//     res = mysql_use_result(mysql);
 
-    while ((row = mysql_fetch_row(res)) != NULL) {
-        if(GeoIPBackend::chinamobile_column_index < MAX_ARRAY_SIZE){
-            GeoIPBackend::chinamobile_column_data[GeoIPBackend::chinamobile_column_index] = row[0];  // store the first column data
-            GeoIPBackend::chinamobile_column_index++;
-        }
-    }
+//     while ((row = mysql_fetch_row(res)) != NULL) {
+//         if(GeoIPBackend::chinamobile_column_index < MAX_ARRAY_SIZE){
+//             GeoIPBackend::chinamobile_column_data[GeoIPBackend::chinamobile_column_index] = row[0];  // store the first column data
+//             GeoIPBackend::chinamobile_column_index++;
+//         }
+//     }
 
-    mysql_free_result(res);
-    mysql_close(mysql);
-}
+//     mysql_free_result(res);
+//     mysql_close(mysql);
+// }
 
 
 
