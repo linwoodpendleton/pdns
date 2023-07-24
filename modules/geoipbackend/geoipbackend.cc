@@ -595,15 +595,6 @@ static string queryGeoIP(const Netmask& addr, GeoIPInterface::GeoIPQueryAttribut
       else
         found = gi->queryCity(val, gl, ip);
       break;
-    case GeoIPInterface::Location:
-      double lat = 0, lon = 0;
-      boost::optional<int> alt, prec;
-      if (addr.isIPv6())
-        found = gi->queryLocationV6(gl, ip, lat, lon, alt, prec);
-      else
-        found = gi->queryLocation(gl, ip, lat, lon, alt, prec);
-      val = std::to_string(lat) + " " + std::to_string(lon);
-      break;
     case GeoIPInterface::domain:
       if (addr.isIPv6())
         found = gi->queryDomainV6(val, gl, ip);
@@ -633,6 +624,15 @@ static string queryGeoIP(const Netmask& addr, GeoIPInterface::GeoIPQueryAttribut
         found = gi->queryORGV6(val, gl, ip);
       else
         found = gi->queryORG(val, gl, ip);
+      break;
+    case GeoIPInterface::Location:
+      double lat = 0, lon = 0;
+      boost::optional<int> alt, prec;
+      if (addr.isIPv6())
+        found = gi->queryLocationV6(gl, ip, lat, lon, alt, prec);
+      else
+        found = gi->queryLocation(gl, ip, lat, lon, alt, prec);
+      val = std::to_string(lat) + " " + std::to_string(lon);
       break;
     }
 
