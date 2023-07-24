@@ -1049,14 +1049,7 @@ static void setupLuaRecords(LuaContext& lua)
         });
 
     });
-  lua.writeFunction("countryCode", []() {
-      string unknown("unknown");
-      string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Country2);
-      if ( res == unknown ) {
-       return std::string("--");
-      }
-      return res;
-    });
+
 
   lua.writeFunction("region", [](const combovar_t& var) {
       string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Region);
