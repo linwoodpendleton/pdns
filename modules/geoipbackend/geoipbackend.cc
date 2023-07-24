@@ -164,7 +164,6 @@ void GeoIPBackend::initialize()
 {
   YAML::Node config;
   vector<GeoIPDomain> tmp_domains;
-  GeoIPBackend::chinamobile_column_index = 0;
   s_geoip_files.clear(); // reset pointers
 
   if (getArg("database-files").empty() == false) {
