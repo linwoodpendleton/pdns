@@ -1050,9 +1050,7 @@ static void setupLuaRecords(LuaContext& lua)
 
   lua.writeFunction("region", [](const combovar_t& var) {
       string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::Region);
-      return doCompare(var, res, [](const std::string& a, const std::string& b) {
-          return !strcasecmp(a.c_str(), b.c_str());
-        });
+      return res;
     });
   lua.writeFunction("wmdomain", []() {
     string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::domain);
@@ -1074,9 +1072,6 @@ static void setupLuaRecords(LuaContext& lua)
 
   lua.writeFunction("wmasn2", []() {
     string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::asn2);
-    return doCompare(var, res, [](const std::string& a, const std::string& b) {
-      return !strcasecmp(a.c_str(), b.c_str());
-    });
     return res;
   });
   lua.writeFunction("regionCode", []() {
