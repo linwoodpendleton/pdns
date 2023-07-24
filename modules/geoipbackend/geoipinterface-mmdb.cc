@@ -472,7 +472,7 @@ bool mmdbLookupISP(const string& ip, bool v6, GeoIPNetmask& gl, MMDB_lookup_resu
     return false;
   }
 };
-};
+
 
 
 
