@@ -1053,7 +1053,6 @@ static void setupLuaRecords(LuaContext& lua)
       return doCompare(var, res, [](const std::string& a, const std::string& b) {
           return !strcasecmp(a.c_str(), b.c_str());
         });
-     return res;
     });
   lua.writeFunction("wmdomain", []() {
     string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::domain);
