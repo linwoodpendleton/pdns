@@ -30,6 +30,8 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeInterface(const string& dbStr,con
   /* parse dbStr */
   map<string, string> opts;
   vector<string> parts1, parts2;
+  vector<string> parts3, parts4;
+  vector<string> parts5, parts6;
   string driver;
   string filename;
   string filename_domain;
@@ -52,26 +54,44 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeInterface(const string& dbStr,con
     filename = parts2[0];
   }
 
-  stringtok(parts1, db_domain_Str, ":");
+  stringtok(parts3, db_domain_Str, ":");
 
-  if (parts1.size() == 1) {
-    stringtok(parts2, parts1[0], ";");
+  if (parts3.size() == 1) {
+    stringtok(parts4, parts3[0], ";");
     /* try extension */
-    filename_domain = parts2[0];
+    filename_domain = parts4[0];
   }
 
 
-  stringtok(parts1, db_isp_Str, ":");
+  stringtok(parts5, db_isp_Str, ":");
 
-  if (parts1.size() == 1) {
-    stringtok(parts2, parts1[0], ";");
+  if (parts5.size() == 1) {
+    stringtok(parts6, parts5[0], ";");
     /* try extension */
-    filename_isp = parts2[0];
+    filename_isp = parts6[0];
   }
 
   if (parts2.size() > 1) {
     parts2.erase(parts2.begin(), parts2.begin() + 1);
     for (const auto& opt : parts2) {
+      vector<string> kv;
+      stringtok(kv, opt, "=");
+      opts[kv[0]] = kv[1];
+    }
+  }
+
+  if (parts4.size() > 1) {
+    parts4.erase(parts4.begin(), parts4.begin() + 1);
+    for (const auto& opt : parts4) {
+      vector<string> kv;
+      stringtok(kv, opt, "=");
+      opts[kv[0]] = kv[1];
+    }
+  }
+
+  if (parts6.size() > 1) {
+    parts6.erase(parts4.begin(), parts6.begin() + 1);
+    for (const auto& opt : parts6) {
       vector<string> kv;
       stringtok(kv, opt, "=");
       opts[kv[0]] = kv[1];
