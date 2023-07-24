@@ -37,9 +37,9 @@
 #include <time.h>
 #define MAX_ARRAY_SIZE 100
 
-MYSQL *mysql;
-MYSQL_RES *res;
-MYSQL_ROW row;
+// MYSQL *mysql;
+// MYSQL_RES *res;
+// MYSQL_ROW row;
 
 
 
