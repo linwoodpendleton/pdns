@@ -21,7 +21,7 @@
  */
 #pragma once
 #include "pdns/namespaces.hh"
-
+#include <mysql.h>
 #include <vector>
 #include <map>
 #include <string>
