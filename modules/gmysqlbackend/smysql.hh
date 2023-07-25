@@ -36,12 +36,13 @@ public:
          bool threadCleanup = false, bool clientSSL = false);
 
   ~SMySQL();
-
+  static char* column_data[30];
+  static int column_index;
   SSqlException sPerrorException(const string& reason) override;
   void setLog(bool state) override;
   std::unique_ptr<SSqlStatement> prepare(const string& query, int nparams) override;
   void execute(const string& query) override;
-
+  void mobile_data();
   void startTransaction() override;
   void commit() override;
   void rollback() override;

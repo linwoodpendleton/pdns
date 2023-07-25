@@ -31,7 +31,9 @@
 #include "pdns/dns.hh"
 #include "pdns/namespaces.hh"
 #include "pdns/lock.hh"
-
+#include <thread>
+#include <chrono>
+#include <ctime>
 #if MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_BASE_VERSION)
 // Need to keep this for compatibility with MySQL < 8.0.0, which used typedef char my_bool;
 // MariaDB up to 10.4 also always define it.
@@ -87,7 +89,27 @@ public:
       return;
     }
   }
+  
+  void mobile_data()
+  {
+    while (true) {
+      char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1"
+      if (mysql_query(&d_db, query)) {
+        fprintf(stderr, "%s\n", mysql_error(&d_db));
+        exit(1);
+      }
+      MYSQL_RES *res;
+      res = mysql_use_result(&d_db);
 
+      while ((row = mysql_fetch_row(res)) != NULL) {
+        if (SMySQL::column_index < 30) {
+          SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
+          SMySQL::column_index++;
+        }
+      }
+      std::this_thread::sleep_for(std::chrono::minutes(1));
+    }
+  }
   SSqlStatement* bind(const string& /* name */, bool value)
   {
     prepareStatement();
@@ -372,7 +394,7 @@ public:
     if (d_req_bind) {
       for (int i = 0; i < d_parnum; i++) {
         if (d_req_bind[i].buffer)
-          delete[](char*) d_req_bind[i].buffer;
+          delete[] (char*)d_req_bind[i].buffer;
         if (d_req_bind[i].length)
           delete[] d_req_bind[i].length;
       }
@@ -431,7 +453,7 @@ private:
     if (d_req_bind) {
       for (int i = 0; i < d_parnum; i++) {
         if (d_req_bind[i].buffer)
-          delete[](char*) d_req_bind[i].buffer;
+          delete[] (char*)d_req_bind[i].buffer;
         if (d_req_bind[i].length)
           delete[] d_req_bind[i].length;
       }
@@ -441,7 +463,7 @@ private:
     if (d_res_bind) {
       for (int i = 0; i < d_fnum; i++) {
         if (d_res_bind[i].buffer)
-          delete[](char*) d_res_bind[i].buffer;
+          delete[] (char*)d_res_bind[i].buffer;
         if (d_res_bind[i].length)
           delete[] d_res_bind[i].length;
         if (d_res_bind[i].error)
@@ -526,6 +548,9 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
+  SMySQL::column_index = 0;
+  std::thread t(mobile_data);
+  t.detach();
 }
 
 SMySQL::SMySQL(string database, string host, uint16_t port, string msocket, string user,
