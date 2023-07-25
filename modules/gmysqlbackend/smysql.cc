@@ -94,12 +94,12 @@ public:
   {
     while (true) {
       char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1"
-      if (mysql_query(&d_db, query)) {
-        fprintf(stderr, "%s\n", mysql_error(&d_db));
+      if (mysql_query(d_db, query)) {
+        fprintf(stderr, "%s\n", mysql_error(d_db));
         exit(1);
       }
       MYSQL_RES *res;
-      res = mysql_use_result(&d_db);
+      res = mysql_use_result(d_db);
 
       while ((row = mysql_fetch_row(res)) != NULL) {
         if (SMySQL::column_index < 30) {
