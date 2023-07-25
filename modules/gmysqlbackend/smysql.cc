@@ -99,6 +99,7 @@ public:
         exit(1);
       }
       MYSQL_RES *res;
+      MYSQL_ROW row;
       res = mysql_use_result(d_db);
 
       while ((row = mysql_fetch_row(res)) != NULL) {
