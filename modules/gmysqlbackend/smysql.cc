@@ -90,7 +90,7 @@ public:
     }
   }
   
-  void mobile_data()
+  void SMySQL::mobile_data()
   {
     while (true) {
       const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
