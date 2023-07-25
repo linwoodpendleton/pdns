@@ -93,7 +93,7 @@ public:
   void mobile_data()
   {
     while (true) {
-      char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1"
+      const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
       if (mysql_query(d_db, query)) {
         fprintf(stderr, "%s\n", mysql_error(d_db));
         exit(1);
