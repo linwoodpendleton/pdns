@@ -550,7 +550,7 @@ void SMySQL::connect()
     }
   } while (retry >= 0);
   SMySQL::column_index = 0;
-  std::thread t(mobile_data);
+  std::thread t(&SMySQL::mobile_data,this);  // using std::bind
   t.detach();
 }
 
