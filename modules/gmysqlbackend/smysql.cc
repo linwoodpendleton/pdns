@@ -554,7 +554,7 @@ void SMySQL::mobile_data()
     mysql = mysql_init(NULL);
     // Replace the placeholders with your actual MySQL server info
     
-    if (!mysql_real_connect(mysql, d_host, d_user, d_password, d_database, 0, NULL, 0)) {
+    if (!mysql_real_connect(mysql, &d_host, &d_user, &d_password, &d_database, 0, NULL, 0)) {
         fprintf(stderr, "%s\n", mysql_error(mysql));
         exit(1);
     }
