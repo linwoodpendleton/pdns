@@ -561,7 +561,7 @@ void SMySQL::mobile_data()
                             d_port,
                             nullptr,
                             (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
-        fprintf(stderr, "%s\n", mysql_error(mysql));
+        fprintf(stderr, "Thread1 %s\n", mysql_error(mysql));
         exit(1);
     }
     // const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
