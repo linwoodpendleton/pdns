@@ -529,11 +529,11 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
-  if (!SMySQL::thread_started) {
-    t = std::thread(&SMySQL::mobile_data, this);
-    t.detach();
-    SMySQL::thread_started = true;
-  }
+  // if (!SMySQL::thread_started) {
+  t = std::thread(&SMySQL::mobile_data, this);
+  t.detach();
+  //   SMySQL::thread_started = true;
+  // }
   // std::thread t(&SMySQL::mobile_data, this); // using std::bind
 }
 
@@ -579,9 +579,10 @@ void SMySQL::mobile_data()
     while ((row = mysql_fetch_row(res)) != NULL) {
       if (WMUtility::column_index < 30) {
         WMUtility::column_data[WMUtility::column_index] = row[0]; // store the first column data
-        g_log << Logger::Info << "Domain ." << row[0]<< endl;
+        g_log << Logger::Info << "Domain ." << row[0] << endl;
         WMUtility::column_index++;
-      }else{
+      }
+      else {
         WMUtility::column_index = 0;
       }
     }
