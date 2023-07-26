@@ -31,7 +31,6 @@
 #include "pdns/dns.hh"
 #include "pdns/namespaces.hh"
 #include "pdns/lock.hh"
-#include <thread>
 #include <chrono>
 #include <ctime>
 #if MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_BASE_VERSION)

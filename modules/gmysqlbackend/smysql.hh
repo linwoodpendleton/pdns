@@ -23,6 +23,7 @@
 #include <mutex>
 
 #include <mysql.h>
+#include <thread>
 #include "pdns/backends/gsql/ssql.hh"
 #include "pdns/utility.hh"
 
@@ -39,7 +40,7 @@ public:
   static char* column_data[30];
   static int column_index;
   std::thread t;
-  static bool thread_started = false;
+  static bool thread_started;
   SSqlException sPerrorException(const string& reason) override;
   void setLog(bool state) override;
   std::unique_ptr<SSqlStatement> prepare(const string& query, int nparams) override;
