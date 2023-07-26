@@ -34,7 +34,7 @@
 #include <thread>
 #include <chrono>
 #include <ctime>
-#include "utility.hh"
+#include "wmutility.hh"
 #if MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_BASE_VERSION)
 // Need to keep this for compatibility with MySQL < 8.0.0, which used typedef char my_bool;
 // MariaDB up to 10.4 also always define it.
