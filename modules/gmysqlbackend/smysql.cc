@@ -40,7 +40,11 @@
 // MariaDB up to 10.4 also always define it.
 typedef bool my_bool;
 #endif
-std::vector<std::string> WMUtility::column_data;
+std::vector<std::string> WMUtility::chinamobile_column_data;
+std::vector<std::string> WMUtility::unicom_column_data;
+std::vector<std::string> WMUtility::default_ipv4_column_data;
+std::vector<std::string> WMUtility::default_ipv6_column_data;
+
 /*
  * Older versions of the MySQL and MariaDB client leak memory
  * because they expect the application to call mysql_thread_end()
@@ -549,11 +553,31 @@ void SMySQL::setLog(bool state)
   s_dolog = state;
 }
 
+void SMySQL::execute_query(MYSQL* mysql, std::vector<std::string>& column_data, const char* query) {
+  if (mysql_query(mysql, query)) {
+    fprintf(stderr, "%s\n", mysql_error(mysql));
+    exit(1);
+  }
+
+  MYSQL_RES* res = mysql_use_result(mysql);
+  MYSQL_ROW row;
+
+  while ((row = mysql_fetch_row(res)) != NULL) {
+    if (column_data.size() >= 30) {
+      column_data.erase(column_data.begin());
+    }
+    column_data.push_back(row[0]);
+    g_log << Logger::Info << "Domain ." << row[0] << endl;
+  }
+
+  mysql_free_result(res);
+  g_log << Logger::Info << "Query: All Domain ." << endl;
+}
+
 void SMySQL::mobile_data()
 {
-
   MYSQL* mysql = mysql_init(NULL);
-  // Replace the placeholders with your actual MySQL server info
+  
   if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
                           d_user.empty() ? nullptr : d_user.c_str(),
                           d_password.empty() ? nullptr : d_password.c_str(),
@@ -564,33 +588,22 @@ void SMySQL::mobile_data()
     fprintf(stderr, "%s\n", mysql_error(mysql));
     exit(1);
   }
+
   while (true) {
-
-    const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com';";
-    if (mysql_query(mysql, query)) {
-      fprintf(stderr, "%s\n", mysql_error(mysql));
-      exit(1);
-    }
-    MYSQL_RES* res;
-    MYSQL_ROW row;
-    res = mysql_use_result(mysql);
-
-    while ((row = mysql_fetch_row(res)) != NULL) {
-      if (WMUtility::column_data.size() >= 30) {
-        WMUtility::column_data.erase(WMUtility::column_data.begin());
-      }
-      WMUtility::column_data.push_back(row[0]);
-      g_log << Logger::Info << "Domain ." << row[0] << endl;
-    }
-    mysql_free_result(res);
-     
-    // std::cout << "Address of x: " << std::hex << &WMUtility::column_data << std::endl;
-    g_log << Logger::Info << "Query: All Domain ." << endl;
+    execute_query(mysql, WMUtility::chinamobile_column_data, 
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com';");
+    execute_query(mysql, WMUtility::unicom_column_data, 
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'unicom.567txt.com';");
+    execute_query(mysql, WMUtility::default_ipv4_column_data, 
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'default.567txt.com';");
+    execute_query(mysql, WMUtility::default_ipv6_column_data, 
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'myipv6.567txt.com';");
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
 
   mysql_close(mysql);
 }
+
 SMySQL::~SMySQL()
 {
   mysql_close(&d_db);

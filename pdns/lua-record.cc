@@ -583,18 +583,17 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   return candidates;
 }
 
-static  std::string china_mobile_random_element() {
-    if (WMUtility::column_data.size() <= 0) {
+static std::string random_element_from_vector(const std::vector<std::string>& data) {
+    if (data.empty()) {
         printf("No data in the array\n");
-        // std::cout << "Address of x: " << std::hex << &WMUtility::column_data << std::endl;
-        g_log<<Logger::Info<<"error: No data in the array\n " <<endl;
-        return NULL;
+        g_log << Logger::Info << "error: No data in the array\n " << endl;
+        return "";  // 请注意，你不能从一个返回std::string的函数返回NULL，这是错误的。你应该返回一个空字符串。
     }
 
     srand(time(NULL)); 
-    int random_index = rand() % (WMUtility::column_data.size()-1);
-    std::string str = WMUtility::column_data[random_index];
-    g_log<<Logger::Info<<"Info: Find data:"<<str<<"\n "<<endl;
+    int random_index = rand() % data.size();
+    std::string str = data[random_index];
+    g_log << Logger::Info << "Info: Find data:" << str << "\n " << endl;
     return str;
 }
 static vector<string> convStringList(const iplist_t& items)
@@ -1085,7 +1084,25 @@ static void setupLuaRecords(LuaContext& lua)
     return res;
   });
   lua.writeFunction("wmchinamobile", []() {
-    string res = china_mobile_random_element();
+    string res = random_element_from_vector(WMUtility::chinamobile_column_data);;
+
+    return res;
+  });
+
+  lua.writeFunction("wmdefaultipv4", []() {
+    string res = random_element_from_vector(WMUtility::default_ipv4_column_data);;
+
+    return res;
+  });
+
+  lua.writeFunction("wmdefaultipv6", []() {
+    string res = random_element_from_vector(WMUtility::default_ipv6_column_data);;
+
+    return res;
+  });
+
+  lua.writeFunction("wmunicom", []() {
+    string res = random_element_from_vector(WMUtility::unicom_column_data);;
 
     return res;
   });

@@ -43,6 +43,7 @@ public:
   void setLog(bool state) override;
   std::unique_ptr<SSqlStatement> prepare(const string& query, int nparams) override;
   void execute(const string& query) override;
+  void execute_query(MYSQL* mysql, std::vector<std::string>& column_data, const char* query)
   void mobile_data();
   void startTransaction() override;
   void commit() override;
