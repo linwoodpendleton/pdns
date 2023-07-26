@@ -582,7 +582,7 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   }
   return candidates;
 }
-static  char* china_mobile_random_element() {
+static  std::string china_mobile_random_element() {
     if (WMUtility::column_data.size() > 0) {
         printf("No data in the array\n");
         g_log<<Logger::Info<<"error: No data in the array\n "<<endl;
@@ -592,10 +592,8 @@ static  char* china_mobile_random_element() {
     srand(time(NULL)); 
     int random_index = rand() % WMUtility::column_index;
     std::string str = WMUtility::column_data[random_index];
-    char* cstr = new char[str.length() + 1];
-    std::strcpy(cstr, str.c_str());
-    g_log<<Logger::Info<<"Info: Find data:"<<cstr.c_str()<<"\n "<<endl;
-    return WMUtility::cstr.c_str();
+    g_log<<Logger::Info<<"Info: Find data:"<<str<<"\n "<<endl;
+    return str;
 }
 static vector<string> convStringList(const iplist_t& items)
 {
