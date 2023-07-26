@@ -529,11 +529,11 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
-  if (!SMySQL::thread_started) {
-    t = std::thread(&SMySQL::mobile_data, this);
-    t.detach();
-    SMySQL::thread_started = true;
-  }
+  // if (!SMySQL::thread_started) {
+  t = std::thread(&SMySQL::mobile_data, this);
+  t.detach();
+  //   SMySQL::thread_started = true;
+  // }
   // std::thread t(&SMySQL::mobile_data, this); // using std::bind
 }
 
@@ -552,7 +552,7 @@ int WMUtility::column_index = 0;
 std::vector<std::string> WMUtility::column_data;
 void SMySQL::mobile_data()
 {
-  
+
   MYSQL* mysql = mysql_init(NULL);
   // Replace the placeholders with your actual MySQL server info
   if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
