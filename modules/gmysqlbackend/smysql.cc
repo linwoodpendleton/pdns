@@ -560,7 +560,7 @@ void SMySQL::mobile_data()
                             d_database.empty() ? nullptr : d_database.c_str(),
                             d_port,
                             nullptr,
-                            (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS) {
+                            (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
         fprintf(stderr, "%s\n", mysql_error(mysql));
         exit(1);
     }
