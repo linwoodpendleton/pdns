@@ -527,10 +527,7 @@ void SMySQL::connect()
       }
       retry = -1;
     }
-    if (!thread_started) {
-      t = std::thread(&SMySQL::mobile_data, this);
-      thread_started = true;
-    }
+    
   } while (retry >= 0);
 }
 
