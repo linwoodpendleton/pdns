@@ -1,18 +1,18 @@
-class Utility
+class WMUtility
 {
 private:
     /* data */
 public:
-    Utility(/* args */);
-    ~Utility();
+    WMUtility();
+    ~WMUtility();
     static char* column_data[30];
     static int column_index;
 };
 
-Utility::Utility(/* args */)
+WMUtility::WMUtility()
 {
 }
 
-Utility::~Utility()
+WMUtility::~WMUtility()
 {
 }
