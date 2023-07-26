@@ -584,7 +584,7 @@ void SMySQL::mobile_data()
     }
     mysql_free_result(res);
      
-    std::cout << "Address of x: " << std::hex << &WMUtility::column_data << std::endl;
+    // std::cout << "Address of x: " << std::hex << &WMUtility::column_data << std::endl;
     g_log << Logger::Info << "Query: All Domain ." << endl;
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
