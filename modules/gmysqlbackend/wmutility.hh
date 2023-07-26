@@ -11,4 +11,5 @@ public:
     static int column_index;
 };
 
-
+int WMUtility::column_index = 0;
+std::vector<std::string> WMUtility::column_data;
