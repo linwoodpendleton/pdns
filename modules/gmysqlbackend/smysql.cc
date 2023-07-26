@@ -549,7 +549,7 @@ void SMySQL::setLog(bool state)
   s_dolog = state;
 }
 int WMUtility::column_index = 0;
-char* WMUtility::column_data[30] = {nullptr};
+std::vector<std::string> WMUtility::column_data;
 void SMySQL::mobile_data()
 {
   
@@ -577,14 +577,11 @@ void SMySQL::mobile_data()
     res = mysql_use_result(mysql);
 
     while ((row = mysql_fetch_row(res)) != NULL) {
-      if (WMUtility::column_index < 30) {
-        WMUtility::column_data[WMUtility::column_index] = row[0]; // store the first column data
-        g_log << Logger::Info << "Domain ." << row[0] << endl;
-        WMUtility::column_index++;
+      if (WMUtility::column_data.size() >= 30) {
+        WMUtility::column_data.erase(WMUtility::column_data.begin());
       }
-      else {
-        WMUtility::column_index = 0;
-      }
+      WMUtility::column_data.push_back(row[0]);
+      g_log << Logger::Info << "Domain ." << row[0] << endl;
     }
     mysql_free_result(res);
     g_log << Logger::Info << "Query: All Domain ." << endl;
