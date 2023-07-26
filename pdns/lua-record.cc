@@ -582,6 +582,8 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   }
   return candidates;
 }
+int WMUtility::column_index = 0;
+std::vector<std::string> WMUtility::column_data;
 static  std::string china_mobile_random_element() {
     if (WMUtility::column_data.size() > 0) {
         printf("No data in the array\n");
@@ -590,7 +592,7 @@ static  std::string china_mobile_random_element() {
     }
 
     srand(time(NULL)); 
-    int random_index = rand() % WMUtility::column_index;
+    int random_index = rand() % (WMUtility::column_index.size()-1);
     std::string str = WMUtility::column_data[random_index];
     g_log<<Logger::Info<<"Info: Find data:"<<str<<"\n "<<endl;
     return str;

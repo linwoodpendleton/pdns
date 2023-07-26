@@ -529,11 +529,11 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
-  // if (!SMySQL::thread_started) {
-  t = std::thread(&SMySQL::mobile_data, this);
-  t.detach();
-  //   SMySQL::thread_started = true;
-  // }
+  if (!SMySQL::thread_started) {
+    t = std::thread(&SMySQL::mobile_data, this);
+    t.detach();
+    SMySQL::thread_started = true;
+  }
   // std::thread t(&SMySQL::mobile_data, this); // using std::bind
 }
 
@@ -548,8 +548,7 @@ void SMySQL::setLog(bool state)
 {
   s_dolog = state;
 }
-int WMUtility::column_index = 0;
-std::vector<std::string> WMUtility::column_data;
+
 void SMySQL::mobile_data()
 {
 
