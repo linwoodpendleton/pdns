@@ -23,7 +23,7 @@
 #include <mutex>
 
 #include <mysql.h>
-
+#include <thread>
 #include "pdns/backends/gsql/ssql.hh"
 #include "pdns/utility.hh"
 
