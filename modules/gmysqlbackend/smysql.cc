@@ -579,11 +579,14 @@ void SMySQL::mobile_data()
     while ((row = mysql_fetch_row(res)) != NULL) {
       if (WMUtility::column_index < 30) {
         WMUtility::column_data[WMUtility::column_index] = row[0]; // store the first column data
+        g_log << Logger::Info << "Domain ." << row[0]<< endl;
         WMUtility::column_index++;
+      }else{
+        WMUtility::column_index = 0;
       }
     }
     mysql_free_result(res);
-    g_log << Logger::Warning << "Query: All Domain ." << endl;
+    g_log << Logger::Info << "Query: All Domain ." << endl;
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
 
