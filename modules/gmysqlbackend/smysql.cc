@@ -551,7 +551,7 @@ void SMySQL::mobile_data()
 {
   while (true) {
     MYSQL *mysql;
-    if (!mysql_init(&mysql)) {
+    if (!mysql_init(mysql)) {
       throw sPerrorException("Unable to initialize mysql driver");
     }
     // Replace the placeholders with your actual MySQL server info
