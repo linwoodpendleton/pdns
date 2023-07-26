@@ -49,6 +49,7 @@ public:
   void commit() override;
   void rollback() override;
   bool isConnectionUsable() override;
+  static bool thread_started = false;
 
 private:
   void connect();
@@ -58,7 +59,7 @@ private:
 
   MYSQL d_db;
   std::thread t;
-  bool thread_started = false;
+  
   std::string d_database;
   std::string d_host;
   std::string d_msocket;

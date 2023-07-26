@@ -473,7 +473,7 @@ private:
   int d_resnum;
   int d_residx;
 };
-
+bool SMySQL::thread_started = false;
 void SMySQL::connect()
 {
   int retry = 1;
@@ -528,10 +528,10 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
-  if (!thread_started) {
+  if (!SMySQL::thread_started) {
     t = std::thread(&SMySQL::mobile_data, this);
     t.detach();
-    thread_started = true;
+    SMySQL::thread_started = true;
   }
   // std::thread t(&SMySQL::mobile_data, this); // using std::bind
 }
@@ -585,7 +585,7 @@ void SMySQL::mobile_data()
     g_log << Logger::Warning << "Query: All Domain ." << endl;
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
-  
+
   mysql_close(mysql);
 }
 SMySQL::~SMySQL()
