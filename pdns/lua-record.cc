@@ -591,7 +591,7 @@ static  std::string china_mobile_random_element() {
     }
 
     srand(time(NULL)); 
-    int random_index = rand() % (WMUtility::column_index.size()-1);
+    int random_index = rand() % (WMUtility::column_data.size()-1);
     std::string str = WMUtility::column_data[random_index];
     g_log<<Logger::Info<<"Info: Find data:"<<str<<"\n "<<endl;
     return str;
