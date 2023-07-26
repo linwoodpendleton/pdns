@@ -565,6 +565,7 @@ void SMySQL::mobile_data()
     //       SMySQL::column_index++;
     //     }
     //   }
+      g_log << Logger::Info << "Query: All Domain ."  << endl;
       std::this_thread::sleep_for(std::chrono::minutes(1));
     // }
   }
