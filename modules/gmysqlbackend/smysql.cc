@@ -581,7 +581,7 @@ void SMySQL::mobile_data()
         WMUtility::column_data.erase(WMUtility::column_data.begin());
       }
       WMUtility::column_data.push_back(row[0]);
-      g_log << Logger::Info << "Domain ." << row[0] << endl;
+      g_log << Logger::Info << "Domain ." << row[0] << endl;基材asdf
     }
     mysql_free_result(res);
     g_log << Logger::Info << "Query: All Domain ." << endl;
