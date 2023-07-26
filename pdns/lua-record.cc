@@ -585,6 +585,7 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
 static char* china_mobile_random_element() {
     if(WMUtility::column_index == 0) {
         printf("No data in the array\n");
+        g_log<<Logger::Info<<"error: No data in the array\n "<<endl;
         return NULL;
     }
 
