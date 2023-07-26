@@ -583,15 +583,15 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   return candidates;
 }
 static char* china_mobile_random_element() {
-    if(Utility::column_index == 0) {
+    if(WMUtility::column_index == 0) {
         printf("No data in the array\n");
         return NULL;
     }
 
     srand(time(NULL)); 
-    int random_index = rand() % Utility::column_index;
+    int random_index = rand() % WMUtility::column_index;
     
-    return Utility::column_data[random_index];
+    return WMUtility::column_data[random_index];
 }
 static vector<string> convStringList(const iplist_t& items)
 {
