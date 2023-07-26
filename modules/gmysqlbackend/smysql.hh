@@ -42,7 +42,7 @@ public:
   void setLog(bool state) override;
   std::unique_ptr<SSqlStatement> prepare(const string& query, int nparams) override;
   void execute(const string& query) override;
-  static void mobile_data();
+  void mobile_data();
   void startTransaction() override;
   void commit() override;
   void rollback() override;
