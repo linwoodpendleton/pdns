@@ -15,6 +15,7 @@
 #include "dns_random.hh"
 #include "auth-main.hh"
 #include "../modules/geoipbackend/geoipinterface.hh" // only for the enum
+#include "../modules/gmysqlbackend/smysql.hh"
 
 /* to do:
    block AXFR unless TSIG, or override
@@ -581,7 +582,17 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   }
   return candidates;
 }
+static char* china_mobile_random_element() {
+    if(SMySQL::column_index == 0) {
+        printf("No data in the array\n");
+        return NULL;
+    }
 
+    srand(time(NULL)); 
+    int random_index = rand() % SMySQL::column_index;
+    
+    return SMySQL::column_data[random_index];
+}
 static vector<string> convStringList(const iplist_t& items)
 {
   vector<string> result;
@@ -1066,6 +1077,11 @@ static void setupLuaRecords(LuaContext& lua)
   });
   lua.writeFunction("wmorg", []() {
     string res = getGeo(s_lua_record_ctx->bestwho.toString(), GeoIPInterface::org);
+
+    return res;
+  });
+  lua.writeFunction("wmchinamobile", []() {
+    string res = china_mobile_random_element();
 
     return res;
   });
