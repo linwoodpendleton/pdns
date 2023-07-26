@@ -550,20 +550,20 @@ char* SMySQL::column_data[30] = {nullptr};
 void SMySQL::mobile_data()
 {
   while (true) {
-    MYSQL *mysql;
-    if (!mysql_init(mysql)) {
+    MYSQL* mysql;
+    if (!mysql_init(&mysql)) {
       throw sPerrorException("Unable to initialize mysql driver");
     }
     // Replace the placeholders with your actual MySQL server info
     
-    if (!mysql_real_connect(mysql,  d_host.empty() ? nullptr : d_host.c_str(),
+    if (!mysql_real_connect(&mysql,  d_host.empty() ? nullptr : d_host.c_str(),
                             d_user.empty() ? nullptr : d_user.c_str(),
                             d_password.empty() ? nullptr : d_password.c_str(),
                             d_database.empty() ? nullptr : d_database.c_str(),
                             d_port,
                             nullptr,
                             (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
-        fprintf(stderr, "Thread1 %s\n", mysql_error(mysql));
+        fprintf(stderr, "Thread1 %s\n", mysql_error(&mysql));
         exit(1);
     }
     // const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
