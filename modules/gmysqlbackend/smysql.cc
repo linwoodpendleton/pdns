@@ -591,13 +591,13 @@ void SMySQL::mobile_data()
 
   while (true) {
     execute_query(mysql, WMUtility::chinamobile_column_data, 
-                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com';");
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.baidu.com';");
     execute_query(mysql, WMUtility::unicom_column_data, 
-                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'unicom.567txt.com';");
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'unicom.baidu.com';");
     execute_query(mysql, WMUtility::default_ipv4_column_data, 
-                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'default.567txt.com';");
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'default.baidu.com';");
     execute_query(mysql, WMUtility::default_ipv6_column_data, 
-                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'myipv6.567txt.com';");
+                  "SELECT content FROM `pdns`.`records` WHERE `name` = 'myipv6.baidu.com';");
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
 
