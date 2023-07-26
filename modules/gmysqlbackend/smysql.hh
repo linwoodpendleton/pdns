@@ -37,8 +37,7 @@ public:
          bool threadCleanup = false, bool clientSSL = false);
 
   ~SMySQL();
-  static char* column_data[30];
-  static int column_index;
+  
 
   SSqlException sPerrorException(const string& reason) override;
   void setLog(bool state) override;

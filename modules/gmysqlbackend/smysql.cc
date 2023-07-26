@@ -34,6 +34,7 @@
 #include <thread>
 #include <chrono>
 #include <ctime>
+#include "utility.hh"
 #if MYSQL_VERSION_ID >= 80000 && !defined(MARIADB_BASE_VERSION)
 // Need to keep this for compatibility with MySQL < 8.0.0, which used typedef char my_bool;
 // MariaDB up to 10.4 also always define it.
@@ -547,8 +548,8 @@ void SMySQL::setLog(bool state)
 {
   s_dolog = state;
 }
-int SMySQL::column_index = 0;
-char* SMySQL::column_data[30] = {nullptr};
+int Utility::column_index = 0;
+char* Utility::column_data[30] = {nullptr};
 
 void SMySQL::mobile_data()
 {
@@ -576,9 +577,9 @@ void SMySQL::mobile_data()
     res = mysql_use_result(mysql);
 
     while ((row = mysql_fetch_row(res)) != NULL) {
-      if (SMySQL::column_index < 30) {
-        SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
-        SMySQL::column_index++;
+      if (Utility::column_index < 30) {
+        Utility::column_data[Utility::column_index] = row[0]; // store the first column data
+        Utility::column_index++;
       }
     }
     mysql_free_result(res);

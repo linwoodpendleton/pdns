@@ -15,7 +15,7 @@
 #include "dns_random.hh"
 #include "auth-main.hh"
 #include "../modules/geoipbackend/geoipinterface.hh" // only for the enum
-#include "../modules/gmysqlbackend/smysql.hh"
+#include "../modules/gmysqlbackend/utility.hh"
 
 /* to do:
    block AXFR unless TSIG, or override
@@ -583,15 +583,15 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   return candidates;
 }
 static char* china_mobile_random_element() {
-    if(SMySQL::column_index == 0) {
+    if(Utility::column_index == 0) {
         printf("No data in the array\n");
         return NULL;
     }
 
     srand(time(NULL)); 
-    int random_index = rand() % SMySQL::column_index;
+    int random_index = rand() % Utility::column_index;
     
-    return SMySQL::column_data[random_index];
+    return Utility::column_data[random_index];
 }
 static vector<string> convStringList(const iplist_t& items)
 {
