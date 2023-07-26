@@ -40,7 +40,7 @@
 // MariaDB up to 10.4 also always define it.
 typedef bool my_bool;
 #endif
-
+std::vector<std::string> WMUtility::column_data;
 /*
  * Older versions of the MySQL and MariaDB client leak memory
  * because they expect the application to call mysql_thread_end()
