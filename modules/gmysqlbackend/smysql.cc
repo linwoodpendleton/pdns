@@ -583,6 +583,8 @@ void SMySQL::mobile_data()
       g_log << Logger::Info << "Domain ." << row[0] << endl;
     }
     mysql_free_result(res);
+     
+    g_log << Logger::Info << "column_data Hex ."<< std::hex << WMUtility::column_data << endl;
     g_log << Logger::Info << "Query: All Domain ." << endl;
     std::this_thread::sleep_for(std::chrono::minutes(1));
   }
