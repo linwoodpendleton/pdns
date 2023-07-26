@@ -553,13 +553,8 @@ void SMySQL::mobile_data()
     MYSQL *mysql;
     mysql = mysql_init(NULL);
     // Replace the placeholders with your actual MySQL server info
-    if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
-                            d_user.empty() ? nullptr : d_user.c_str(),
-                            d_password.empty() ? nullptr : d_password.c_str(),
-                            d_database.empty() ? nullptr : d_database.c_str(),
-                            d_port,
-                            d_msocket.empty() ? nullptr : d_msocket.c_str(),
-                            (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
+    
+    if (!mysql_real_connect(mysql, d_host, d_user, d_password, d_database, 0, NULL, 0)) {
         fprintf(stderr, "%s\n", mysql_error(mysql));
         exit(1);
     }
