@@ -548,7 +548,8 @@ void SMySQL::setLog(bool state)
 {
   s_dolog = state;
 }
-
+int WMUtility::column_index = 0;
+char* WMUtility::column_data[30] = {nullptr};
 void SMySQL::mobile_data()
 {
   
