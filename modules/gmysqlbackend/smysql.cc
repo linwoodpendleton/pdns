@@ -567,7 +567,7 @@ void SMySQL::mobile_data()
   }
   while (true) {
 
-    const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
+    const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com';";
     if (mysql_query(mysql, query)) {
       fprintf(stderr, "%s\n", mysql_error(mysql));
       exit(1);
