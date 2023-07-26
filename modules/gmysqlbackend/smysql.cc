@@ -89,8 +89,7 @@ public:
       return;
     }
   }
-  
-  
+
   SSqlStatement* bind(const string& /* name */, bool value)
   {
     prepareStatement();
@@ -529,9 +528,12 @@ void SMySQL::connect()
       retry = -1;
     }
   } while (retry >= 0);
-  
-  std::thread t(&SMySQL::mobile_data,this);  // using std::bind
-  t.detach();
+  if (!thread_started) {
+    t = std::thread(&SMySQL::mobile_data, this);
+    t.detach();
+    thread_started = true;
+  }
+  // std::thread t(&SMySQL::mobile_data, this); // using std::bind
 }
 
 SMySQL::SMySQL(string database, string host, uint16_t port, string msocket, string user,
@@ -547,41 +549,44 @@ void SMySQL::setLog(bool state)
 }
 int SMySQL::column_index = 0;
 char* SMySQL::column_data[30] = {nullptr};
-void SMySQL::mobile_data()
-  {
-    MYSQL *mysql = mysql_init(NULL);
-    // Replace the placeholders with your actual MySQL server info
-    if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
-                            d_user.empty() ? nullptr : d_user.c_str(),
-                            d_password.empty() ? nullptr : d_password.c_str(),
-                            d_database.empty() ? nullptr : d_database.c_str(),
-                            d_port,
-                            d_msocket.empty() ? nullptr : d_msocket.c_str(),
-                            (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
-        fprintf(stderr, "%s\n", mysql_error(mysql));
-        exit(1);
-    }
-    while (true) {
-      
-      const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
-      if (mysql_query(mysql, query)) {
-        fprintf(stderr, "%s\n", mysql_error(mysql));
-        exit(1);
-      }
-      MYSQL_RES *res;
-      MYSQL_ROW row;
-      res = mysql_use_result(mysql);
 
-      while ((row = mysql_fetch_row(res)) != NULL) {
-        if (SMySQL::column_index < 30) {
-          SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
-          SMySQL::column_index++;
-        }
-      }
-      g_log << Logger::Warning << "Query: All Domain ."  << endl;
-      std::this_thread::sleep_for(std::chrono::minutes(1));
-    }
+void SMySQL::mobile_data()
+{
+  MYSQL* mysql = mysql_init(NULL);
+  // Replace the placeholders with your actual MySQL server info
+  if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
+                          d_user.empty() ? nullptr : d_user.c_str(),
+                          d_password.empty() ? nullptr : d_password.c_str(),
+                          d_database.empty() ? nullptr : d_database.c_str(),
+                          d_port,
+                          d_msocket.empty() ? nullptr : d_msocket.c_str(),
+                          (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
+    fprintf(stderr, "%s\n", mysql_error(mysql));
+    exit(1);
   }
+  while (true) {
+
+    const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
+    if (mysql_query(mysql, query)) {
+      fprintf(stderr, "%s\n", mysql_error(mysql));
+      exit(1);
+    }
+    MYSQL_RES* res;
+    MYSQL_ROW row;
+    res = mysql_use_result(mysql);
+
+    while ((row = mysql_fetch_row(res)) != NULL) {
+      if (SMySQL::column_index < 30) {
+        SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
+        SMySQL::column_index++;
+      }
+    }
+    g_log << Logger::Warning << "Query: All Domain ." << endl;
+    std::this_thread::sleep_for(std::chrono::minutes(1));
+  }
+  mysql_free_result(res);
+  mysql_close(mysql);
+}
 SMySQL::~SMySQL()
 {
   mysql_close(&d_db);

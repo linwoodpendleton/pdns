@@ -57,6 +57,8 @@ private:
   static std::mutex s_myinitlock;
 
   MYSQL d_db;
+  std::thread t;
+  bool thread_started = false;
   std::string d_database;
   std::string d_host;
   std::string d_msocket;
