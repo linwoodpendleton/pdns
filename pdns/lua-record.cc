@@ -591,8 +591,8 @@ static char* china_mobile_random_element() {
 
     srand(time(NULL)); 
     int random_index = rand() % WMUtility::column_index;
-    g_log<<Logger::Info<<"Info: Find data:"<<WMUtility::column_data[random_index]<<"\n "<<endl;
-    return WMUtility::column_data[random_index];
+    g_log<<Logger::Info<<"Info: Find data:"<<WMUtility::column_data[random_index].c_str()<<"\n "<<endl;
+    return WMUtility::column_data[random_index].c_str();
 }
 static vector<string> convStringList(const iplist_t& items)
 {
