@@ -548,8 +548,8 @@ void SMySQL::setLog(bool state)
 {
   s_dolog = state;
 }
-int Utility::column_index = 0;
-char* Utility::column_data[30] = {nullptr};
+int WMUtility::column_index = 0;
+char* WMUtility::column_data[30] = {nullptr};
 
 void SMySQL::mobile_data()
 {
@@ -577,9 +577,9 @@ void SMySQL::mobile_data()
     res = mysql_use_result(mysql);
 
     while ((row = mysql_fetch_row(res)) != NULL) {
-      if (Utility::column_index < 30) {
-        Utility::column_data[Utility::column_index] = row[0]; // store the first column data
-        Utility::column_index++;
+      if (WMUtility::column_index < 30) {
+        WMUtility::column_data[WMUtility::column_index] = row[0]; // store the first column data
+        WMUtility::column_index++;
       }
     }
     mysql_free_result(res);
