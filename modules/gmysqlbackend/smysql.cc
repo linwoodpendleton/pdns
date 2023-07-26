@@ -549,20 +549,28 @@ int SMySQL::column_index = 0;
 char* SMySQL::column_data[30] = {nullptr};
 void SMySQL::mobile_data()
   {
+    MYSQL *mysql = mysql_init(NULL);
+    // Replace the placeholders with your actual MySQL server info
+    if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
+                            d_user.empty() ? nullptr : d_user.c_str(),
+                            d_password.empty() ? nullptr : d_password.c_str(),
+                            d_database.empty() ? nullptr : d_database.c_str(),
+                            d_port,
+                            d_msocket.empty() ? nullptr : d_msocket.c_str(),
+                            (d_clientSSL ? CLIENT_SSL : 0) | CLIENT_MULTI_RESULTS)) {
+        fprintf(stderr, "%s\n", mysql_error(mysql));
+        exit(1);
+    }
     while (true) {
-      if(!d_db){
-        g_log << Logger::Warning << "Error: 001 ."  << endl;
-        std::this_thread::sleep_for(std::chrono::minutes(1));
-        continue;
-      }
+      
       const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
-      if (mysql_query(&d_db, query)) {
-        fprintf(stderr, "%s\n", mysql_error(&d_db));
+      if (mysql_query(mysql, query)) {
+        fprintf(stderr, "%s\n", mysql_error(mysql));
         exit(1);
       }
       MYSQL_RES *res;
       MYSQL_ROW row;
-      res = mysql_use_result(&d_db);
+      res = mysql_use_result(mysql);
 
       while ((row = mysql_fetch_row(res)) != NULL) {
         if (SMySQL::column_index < 30) {
