@@ -582,7 +582,7 @@ static vector<vector<ComboAddress>> convMultiComboAddressList(const boost::varia
   }
   return candidates;
 }
-static const char* china_mobile_random_element() {
+static  char* china_mobile_random_element() {
     if (WMUtility::column_data.size() > 0) {
         printf("No data in the array\n");
         g_log<<Logger::Info<<"error: No data in the array\n "<<endl;
@@ -591,8 +591,11 @@ static const char* china_mobile_random_element() {
 
     srand(time(NULL)); 
     int random_index = rand() % WMUtility::column_index;
-    g_log<<Logger::Info<<"Info: Find data:"<<WMUtility::column_data[random_index].c_str()<<"\n "<<endl;
-    return WMUtility::column_data[random_index].c_str();
+    std::string str = WMUtility::column_data[random_index];
+    char* cstr = new char[str.length() + 1];
+    std::strcpy(cstr, str.c_str());
+    g_log<<Logger::Info<<"Info: Find data:"<<cstr.c_str()<<"\n "<<endl;
+    return WMUtility::cstr.c_str();
 }
 static vector<string> convStringList(const iplist_t& items)
 {
@@ -1082,7 +1085,7 @@ static void setupLuaRecords(LuaContext& lua)
     return res;
   });
   lua.writeFunction("wmchinamobile", []() {
-    const string res = china_mobile_random_element();
+    string res = china_mobile_random_element();
 
     return res;
   });
