@@ -551,8 +551,7 @@ void SMySQL::setLog(bool state)
 
 void SMySQL::mobile_data()
 {
-  int WMUtility::column_index = 0;
-  char* WMUtility::column_data[30] = {nullptr};
+  
   MYSQL* mysql = mysql_init(NULL);
   // Replace the placeholders with your actual MySQL server info
   if (!mysql_real_connect(mysql, d_host.empty() ? nullptr : d_host.c_str(),
