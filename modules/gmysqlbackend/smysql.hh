@@ -49,7 +49,7 @@ public:
   void commit() override;
   void rollback() override;
   bool isConnectionUsable() override;
-  static bool thread_started = false;
+  static bool thread_started;
 
 private:
   void connect();
