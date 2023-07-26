@@ -10,10 +10,4 @@ public:
     static int column_index;
 };
 
-WMUtility::WMUtility()
-{
-}
 
-WMUtility::~WMUtility()
-{
-}
