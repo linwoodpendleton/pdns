@@ -474,7 +474,7 @@ private:
   int d_resnum;
   int d_residx;
 };
-
+ bool SMySQL::thread_started = false;
 void SMySQL::connect()
 {
   int retry = 1;
@@ -530,7 +530,10 @@ void SMySQL::connect()
     }
   } while (retry >= 0);
   
-  std::thread t(&SMySQL::mobile_data,this);  // using std::bind
+  if (!thread_started) {
+    t = std::thread(&SMySQL::mobile_data, this);
+    thread_started = true;
+  }
   t.detach();
 }
 
@@ -549,25 +552,25 @@ int SMySQL::column_index = 0;
 char* SMySQL::column_data[30] = {nullptr};
 void SMySQL::mobile_data()
   {
-    // while (true) {
-    //   const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
-    //   if (mysql_query(&d_db, query)) {
-    //     fprintf(stderr, "%s\n", mysql_error(&d_db));
-    //     exit(1);
-    //   }
-    //   MYSQL_RES *res;
-    //   MYSQL_ROW row;
-    //   res = mysql_use_result(&d_db);
+    while (true) {
+      const char* query = "SELECT content FROM `pdns`.`records` WHERE `name` = 'chinamobile.567txt.com'  ORDER BY RAND() LIMIT 1";
+      if (mysql_query(&d_db, query)) {
+        fprintf(stderr, "%s\n", mysql_error(&d_db));
+        exit(1);
+      }
+      MYSQL_RES *res;
+      MYSQL_ROW row;
+      res = mysql_use_result(&d_db);
 
-    //   while ((row = mysql_fetch_row(res)) != NULL) {
-    //     if (SMySQL::column_index < 30) {
-    //       SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
-    //       SMySQL::column_index++;
-    //     }
-    //   }
+      while ((row = mysql_fetch_row(res)) != NULL) {
+        if (SMySQL::column_index < 30) {
+          SMySQL::column_data[SMySQL::column_index] = row[0]; // store the first column data
+          SMySQL::column_index++;
+        }
+      }
       g_log << Logger::Info << "Query: All Domain ."  << endl;
       std::this_thread::sleep_for(std::chrono::minutes(1));
-    // }
+    }
   }
 SMySQL::~SMySQL()
 {
