@@ -62,6 +62,7 @@ public:
     }
     return bind(name, string(""));
   }
+  
   virtual SSqlStatement* bindNull(const string& name)=0;
   virtual SSqlStatement* execute()=0;;
   virtual bool hasNextRow()=0;

@@ -1230,6 +1230,7 @@ std::vector<shared_ptr<DNSRecordContent>> luaSynth(const std::string& code, cons
   }
   lua.writeVariable("bestwho", s_lua_record_ctx->bestwho);
 
+
   try {
     string actual;
     if (!code.empty() && code[0] != ';')
