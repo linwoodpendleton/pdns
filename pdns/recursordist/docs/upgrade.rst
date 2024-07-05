@@ -4,8 +4,109 @@ Upgrade Guide
 Before upgrading, it is advised to read the :doc:`changelog/index`.
 When upgrading several versions, please read **all** notes applying to the upgrade.
 
-4.8.0 to 4.9.0 and master
+5.0.6 to 5.1.0 and master
 -------------------------
+
+The recursor.conf configuration file may contain YAML configuration syntax and new installs using our packages from repo.powerdns.com will install a configuration file using YAML syntax.
+Note to third-party package maintainers: please start doing the same.
+
+New settings
+^^^^^^^^^^^^
+
+- All settings that can be set in the Lua config now can alternatively be set in YAML.  See :doc:`yamlsettings`.
+- The :ref:`setting-new-domain-db-snapshot-interval` settings has been introduced to set the interval of NOD DB snapshots taken.
+- The :ref:`setting-proxy-protocol-exceptions` setting has been introduced to exempt addresses from using the proxy protocol.
+- The :ref:`setting-system-resolver-ttl` setting has been introduced to set the TTL of the system resolver. The system resolver can be used to resolve forwarding names.
+- The :ref:`setting-system-resolver-interval` setting has been introduced to set the interval of resolve checks done by the system resolver.
+- The :ref:`setting-system-resolver-self-resolve-check` setting has been introduced to disable to discovery of self-resolving configurations.
+- The :ref:`setting-max-chain-length` setting has been introduced to limit the maximum number of queries that can be attached to an outgoing request chain.
+- The :ref:`setting-max-cnames-followed` setting has been introduced to limit the length of CNAME chains followed. Previously this limit was fixed at 10.
+- The :ref:`setting-new-domain-ignore-list-file`, :ref:`setting-unique-response-ignore-list` and  :ref:`setting-unique-response-ignore-list-file` settings have been introduced to filter names reported by the NOD and UDR subsystems.
+
+
+Changed settings
+^^^^^^^^^^^^^^^^
+
+- The :ref:`setting-max-qperq` default value has been lowered to 50, and the qname-minimization special case has been removed.
+- Disabling :ref:`setting-structured-logging` is no longer supported.
+- The :ref:`setting-structured-logging-backend` setting has gained the possibility to request JSON formatted output of structured logging information.
+
+5.0.5 to 5.0.6
+--------------
+
+Changed settings
+^^^^^^^^^^^^^^^^
+
+- The :ref:`setting-max-mthreads` setting will be adjusted to a lower value if the value of ``sysctl vm.max_map_count`` is too low to support the maximum number of mthread stacks. In this case :program:`Recursor` logs an error message including the suggested value of ``vm.max_map_count`` to not cause lowering of :ref:`setting-max-mthreads`.
+
+5.0.4 to 5.0.5
+--------------
+
+Changed settings
+----------------
+
+- For YAML settings only: the type of the :ref:`setting-yaml-incoming.edns_padding_from` and :ref:`setting-yaml-incoming.proxy_protocol_from` has been changed from ``String`` to ``Sequence of Subnet``.
+
+5.0.2 to 5.0.3, 4.9.3 to 4.9.4 and 4.8.6 to 4.8.7
+-------------------------------------------------
+
+Known issue solved
+^^^^^^^^^^^^^^^^^^
+The DNSSEC validation issue with the :func:`zoneToCache` function has been resolved and workarounds can be removed.
+
+5.0.1 to 5.0.2, 4.9.2 to 4.9.3 and 4.8.5 to 4.8.6
+-------------------------------------------------
+
+Known issues
+^^^^^^^^^^^^
+The :func:`zoneToCache` function fails to perform DNSSEC validation if the zone has more than :ref:`setting-max-rrsigs-per-record` RRSIG records at its apex.
+There are two workarounds: either increase the :ref:`setting-max-rrsigs-per-record` to the number of RRSIGs in the zone's apex, or tell :func:`zoneToCache` to skip DNSSEC validation. by adding ``dnssec="ignore"``, e.g.::
+
+  zoneToCache(".", "url", "https://www.internic.net/domain/root.zone", {dnssec="ignore"})
+
+New settings
+^^^^^^^^^^^^
+- The :ref:`setting-max-rrsigs-per-record`, :ref:`setting-max-nsec3s-per-record`, :ref:`setting-max-signature-validations-per-query`, :ref:`setting-max-nsec3-hash-computations-per-query`, :ref:`setting-aggressive-cache-max-nsec3-hash-cost`, :ref:`setting-max-ds-per-zone` and :ref:`setting-max-dnskeys` settings have been introduced to limit the amount of work done for DNSSEC validation.
+
+4.9.0 to 5.0.0
+--------------
+
+YAML settings
+^^^^^^^^^^^^^
+Starting with version 5.0.0-alpha1 the settings file(s) can be specified using YAML syntax.
+The old-style settings files are still accepted but will be unsupported in a future release.
+When a ``recursor.yml`` settings file is encountered it will be processed instead of a ``recursor.conf`` file.
+Refer to :doc:`yamlsettings` for details and the :doc:`appendices/yamlconversion` guide for how to convert old-style settings to the new YAML format.
+
+Rust
+^^^^
+Some parts of the Recursor code are now written in Rust.
+This has impact if you do local builds or are a third-party package maintainer.
+According to `cargo msrv` the minimum version to compile the Rust code and its dependencies is 1.64.
+Some distributions ship with an older Rust compiler, see `Rustup <https://rustup.rs/>`__ for a way to install a more recent one.
+For our package builds, we install a Rust compiler from the ``Standalone`` section of `Other Rust Installation Methods <https://forge.rust-lang.org/infra/other-installation-methods.html>`__.
+
+New settings
+^^^^^^^^^^^^
+- The :ref:`setting-bypass-server-throttling-probability` setting has been introduced to try throttled servers once in a while.
+- The :ref:`setting-tcp-threads` setting has been introduced to set the number of threads dedicated to processing incoming queries over TCP.
+  Previously either the distributor thread(s) or the general worker threads would process TCP queries.
+- The :ref:`setting-qname-max-minimize-count` and :ref:`setting-qname-minimize-one-label` have been introduced to allow tuning of the parameters specified in :rfc:`9156`.
+- The :ref:`setting-allow-no-rd` has been introduced, default disabled, *disallowing* queries that do not have the ``Recursion Desired (RD)`` flag set.
+  This is a change in behavior compared to previous releases.
+- The setting ``ignoreDuplicates`` was added to the RPZ loading Lua functions :func:`rpzPrimary` and :func:`rpzFile`.
+  If set, duplicate records in RPZs will be allowed but ignored.
+  The default is to fail loading an RPZ with duplicate records.
+
+Changed settings
+^^^^^^^^^^^^^^^^
+- The :ref:`setting-loglevel` can now be set to a level below 3 (error).
+- The :ref:`setting-extended-resolution-errors` now defaults to enabled.
+- The :ref:`setting-nsec3-max-iterations` now defaults to 50.
+- Disabling :ref:`setting-structured-logging` has been deprecated and will be removed in a future release.
+
+4.8.0 to 4.9.0
+--------------
 
 Metrics
 ^^^^^^^
@@ -16,7 +117,7 @@ This affects the results shown by ``rec_control get-qtypelist`` and the ``respon
 Additionally, most ``RCodes`` and ``QTypes`` that are marked ``Unassigned``, ``Reserved`` or ``Obsolete`` by IANA are not accounted, to reduce the memory consumed by these metrics.
 
 New settings
-~~~~~~~~~~~~
+^^^^^^^^^^^^
 - The :ref:`setting-packetcache-negative-ttl` settings to control the TTL of negative (NxDomain or NoData) answers in the packet cache has been introduced.
 - The :ref:`setting-stack-cache-size` setting to  control the number of allocated mthread stacks has been introduced.
 - The :ref:`setting-packetcache-shards` settings to control the number of shards in the packet cache has been introduced.
@@ -28,7 +129,7 @@ New settings
 - The setting ``includeSOA`` was added to the :func:`rpzPrimary` and :func:`rpzFile` Lua functions to include the SOA of the RPZ the responses modified by the RPZ.
 
 Changed settings
-~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^
 The first two settings below have effect on the way the recursor distributes queries over threads.
 In some cases, this can lead to imbalance of the number of queries process per thread.
 See :doc:`performance`, in particular the :ref:`worker_imbalance` section.
@@ -37,6 +138,8 @@ See :doc:`performance`, in particular the :ref:`worker_imbalance` section.
 - The :ref:`setting-reuseport` default has been changed to ``yes``.
 - The :ref:`setting-packetcache-ttl` default has been changed to 24 hours.
 - The :ref:`setting-max-recursion-depth` default has been changed to 16. Before it was, 40, but effectively the CNAME length chain limit (fixed at 16) took precedence.
+  If you increase :ref:`setting-max-recursion-depth`, you also have to increase :ref:`setting-stack-size`.
+  A starting point of 5k per recursion depth is suggested. Add some extra safety margin to avoid running out of stack.
 - The :ref:`setting-hint-file` setting gained a new special value to disable refreshing of root hints completely. See :ref:`handling-of-root-hints`.
 
 :program:`rec_control`
@@ -244,7 +347,7 @@ Deprecated and changed settings
 
 Removed settings
 ^^^^^^^^^^^^^^^^
-- The :ref:`setting-query-local-address6` has been removed. It already was deprecated.
+- The ``query-local-address6`` setting has been removed. It already was deprecated.
 
 4.3.x to 4.4.0
 --------------
@@ -270,7 +373,7 @@ inconsistent results.
 Deprecated and changed settings
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 - The :ref:`setting-query-local-address` setting has been modified to be able to include both IPv4 and IPv6 addresses.
-- The :ref:`setting-query-local-address6` settings is now deprecated.
+- The ``query-local-address6`` setting is now deprecated.
 
 New settings
 ^^^^^^^^^^^^
@@ -322,8 +425,8 @@ New settings
 
 Two new settings have been added:
 
-- :ref:`setting-xpf-allow-from` can contain a list of IP addresses ranges from which `XPF (X-Proxied-For) <https://datatracker.ietf.org/doc/draft-bellis-dnsop-xpf/>`_ records will be trusted.
-- :ref:`setting-xpf-rr-code` should list the number of the XPF record to use (in lieu of an assigned code).
+- ``xpf-allow-from`` can contain a list of IP addresses ranges from which `XPF (X-Proxied-For) <https://datatracker.ietf.org/doc/draft-bellis-dnsop-xpf/>`_ records will be trusted.
+- ``setting-xpf-rr-code`` should list the number of the XPF record to use (in lieu of an assigned code).
 
 4.0.x to 4.1.0
 --------------

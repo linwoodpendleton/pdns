@@ -19,7 +19,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #include <boost/test/unit_test.hpp>
@@ -451,7 +454,7 @@ BOOST_AUTO_TEST_CASE(test_Overlay)
 
       BOOST_CHECK_EQUAL(record.d_name, target);
       BOOST_CHECK_EQUAL(record.d_class, QClass::IN);
-      BOOST_CHECK_EQUAL(record.d_ttl, 7200);
+      BOOST_CHECK_EQUAL(record.d_ttl, 7200U);
       BOOST_CHECK_EQUAL(record.d_place, 1U);
       BOOST_CHECK_GE(record.d_contentOffset, lastOffset);
       lastOffset = record.d_contentOffset + record.d_contentLength;

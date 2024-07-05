@@ -42,9 +42,9 @@ vState increaseXDNSSECStateCounter(const vState& state)
 }
 
 // Returns true if dsAnchors were modified
-bool updateTrustAnchorsFromFile(const std::string& fname, map<DNSName, dsmap_t>& dsAnchors, Logr::log_t log)
+bool updateTrustAnchorsFromFile(const std::string& fname, map<DNSName, dsset_t>& dsAnchors, Logr::log_t log)
 {
-  map<DNSName, dsmap_t> newDSAnchors;
+  map<DNSName, dsset_t> newDSAnchors;
   try {
     auto zoneParser = ZoneParserTNG(fname);
     zoneParser.disableGenerate();
@@ -75,7 +75,7 @@ bool updateTrustAnchorsFromFile(const std::string& fname, map<DNSName, dsmap_t>&
     }
     SLOG(g_log << Logger::Info << "Read changed Trust Anchors from file, updating" << endl,
          log->info(Logr::Info, "Read changed Trust Anchors from file, updating"));
-    dsAnchors = newDSAnchors;
+    dsAnchors = std::move(newDSAnchors);
     return true;
   }
   catch (const std::exception& e) {

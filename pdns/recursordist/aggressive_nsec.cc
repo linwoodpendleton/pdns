@@ -29,6 +29,7 @@
 #include "validate.hh"
 
 std::unique_ptr<AggressiveNSECCache> g_aggressiveNSECCache{nullptr};
+uint64_t AggressiveNSECCache::s_nsec3DenialProofMaxCost{0};
 uint8_t AggressiveNSECCache::s_maxNSEC3CommonPrefix = AggressiveNSECCache::s_default_maxNSEC3CommonPrefix;
 
 /* this is defined in syncres.hh and we are not importing that here */
@@ -126,76 +127,72 @@ void AggressiveNSECCache::prune(time_t now)
 {
   uint64_t maxNumberOfEntries = d_maxEntries;
   std::vector<DNSName> emptyEntries;
-
   uint64_t erased = 0;
-  uint64_t lookedAt = 0;
-  uint64_t toLook = std::max(d_entriesCount / 5U, static_cast<uint64_t>(1U));
 
-  if (d_entriesCount > maxNumberOfEntries) {
-    uint64_t toErase = d_entriesCount - maxNumberOfEntries;
-    toLook = toErase * 5;
-    // we are full, scan at max 5 * toErase entries and stop once we have nuked enough
+  auto zones = d_zones.write_lock();
+  // To start, just look through 10% of each zone and nuke everything that is expired
+  zones->visit([now, &erased, &emptyEntries](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
+    if (!node.d_value) {
+      return;
+    }
 
-    auto zones = d_zones.write_lock();
-    zones->visit([now, &erased, toErase, toLook, &lookedAt, &emptyEntries](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
-      if (!node.d_value || erased > toErase || lookedAt > toLook) {
-        return;
+    auto zoneEntry = node.d_value->lock();
+    auto& sidx = boost::multi_index::get<ZoneEntry::SequencedTag>(zoneEntry->d_entries);
+    const auto toLookAtForThisZone = (zoneEntry->d_entries.size() + 9) / 10;
+    uint64_t lookedAt = 0;
+    for (auto it = sidx.begin(); it != sidx.end() && lookedAt < toLookAtForThisZone; ++lookedAt) {
+      if (it->d_ttd <= now) {
+        it = sidx.erase(it);
+        ++erased;
       }
-
-      auto zoneEntry = node.d_value->lock();
-      auto& sidx = boost::multi_index::get<ZoneEntry::SequencedTag>(zoneEntry->d_entries);
-      for (auto it = sidx.begin(); it != sidx.end(); ++lookedAt) {
-        if (erased >= toErase || lookedAt >= toLook) {
-          break;
-        }
-
-        if (it->d_ttd < now) {
-          it = sidx.erase(it);
-          ++erased;
-        }
-        else {
-          ++it;
-        }
+      else {
+        ++it;
       }
+    }
 
-      if (zoneEntry->d_entries.size() == 0) {
-        emptyEntries.push_back(zoneEntry->d_zone);
-      }
-    });
-  }
-  else {
-    // we are not full, just look through 10% of the cache and nuke everything that is expired
-    auto zones = d_zones.write_lock();
-    zones->visit([now, &erased, toLook, &lookedAt, &emptyEntries](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
-      if (!node.d_value) {
-        return;
-      }
-
-      auto zoneEntry = node.d_value->lock();
-      auto& sidx = boost::multi_index::get<ZoneEntry::SequencedTag>(zoneEntry->d_entries);
-      for (auto it = sidx.begin(); it != sidx.end(); ++lookedAt) {
-        if (lookedAt >= toLook) {
-          break;
-        }
-        if (it->d_ttd < now || lookedAt > toLook) {
-          it = sidx.erase(it);
-          ++erased;
-        }
-        else {
-          ++it;
-        }
-      }
-
-      if (zoneEntry->d_entries.size() == 0) {
-        emptyEntries.push_back(zoneEntry->d_zone);
-      }
-    });
-  }
+    if (zoneEntry->d_entries.empty()) {
+      emptyEntries.push_back(zoneEntry->d_zone);
+    }
+  });
 
   d_entriesCount -= erased;
 
+  // If we are still above try harder by nuking entries from each zone in LRU order
+  auto entriesCount = d_entriesCount.load();
+  if (entriesCount > maxNumberOfEntries) {
+    erased = 0;
+    uint64_t toErase = entriesCount - maxNumberOfEntries;
+    zones->visit([&erased, &toErase, &entriesCount, &emptyEntries](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
+      if (!node.d_value || entriesCount == 0) {
+        return;
+      }
+      auto zoneEntry = node.d_value->lock();
+      const auto zoneSize = zoneEntry->d_entries.size();
+      auto& sidx = boost::multi_index::get<ZoneEntry::SequencedTag>(zoneEntry->d_entries);
+      const auto toTrimForThisZone = static_cast<uint64_t>(std::round(static_cast<double>(toErase) * static_cast<double>(zoneSize) / static_cast<double>(entriesCount)));
+      if (entriesCount < zoneSize) {
+        throw std::runtime_error("Inconsistent agggressive cache " + std::to_string(entriesCount) + " " + std::to_string(zoneSize));
+      }
+      // This is comparable to what cachecleaner.hh::pruneMutexCollectionsVector() is doing, look there for an explanation
+      entriesCount -= zoneSize;
+      uint64_t trimmedFromThisZone = 0;
+      for (auto it = sidx.begin(); it != sidx.end() && trimmedFromThisZone < toTrimForThisZone;) {
+        it = sidx.erase(it);
+        ++erased;
+        ++trimmedFromThisZone;
+        if (--toErase == 0) {
+          break;
+        }
+      }
+      if (zoneEntry->d_entries.empty()) {
+        emptyEntries.push_back(zoneEntry->d_zone);
+      }
+    });
+
+    d_entriesCount -= erased;
+  }
+
   if (!emptyEntries.empty()) {
-    auto zones = d_zones.write_lock();
     for (const auto& entry : emptyEntries) {
       zones->remove(entry);
     }
@@ -265,6 +262,10 @@ static bool commonPrefixIsLong(const string& one, const string& two, size_t boun
 bool AggressiveNSECCache::isSmallCoveringNSEC3(const DNSName& owner, const std::string& nextHash)
 {
   std::string ownerHash(fromBase32Hex(owner.getRawLabel(0)));
+  // Special case: empty zone, so the single NSEC3 covers everything. Prefix is long but we still want it cached.
+  if (ownerHash == nextHash) {
+    return false;
+  }
   return commonPrefixIsLong(ownerHash, nextHash, AggressiveNSECCache::s_maxNSEC3CommonPrefix);
 }
 
@@ -344,15 +345,21 @@ void AggressiveNSECCache::insertNSEC(const DNSName& zone, const DNSName& owner, 
     /* the TTL is already a TTD by now */
     if (!nsec3 && isWildcardExpanded(owner.countLabels(), *signatures.at(0))) {
       DNSName realOwner = getNSECOwnerName(owner, signatures);
-      auto pair = zoneEntry->d_entries.insert({record.getContent(), signatures, std::move(realOwner), std::move(next), record.d_ttl});
+      auto pair = zoneEntry->d_entries.insert({record.getContent(), signatures, realOwner, next, record.d_ttl});
       if (pair.second) {
         ++d_entriesCount;
       }
+      else {
+        zoneEntry->d_entries.replace(pair.first, {record.getContent(), signatures, std::move(realOwner), next, record.d_ttl});
+      }
     }
     else {
-      auto pair = zoneEntry->d_entries.insert({record.getContent(), signatures, owner, std::move(next), record.d_ttl});
+      auto pair = zoneEntry->d_entries.insert({record.getContent(), signatures, owner, next, record.d_ttl});
       if (pair.second) {
         ++d_entriesCount;
+      }
+      else {
+        zoneEntry->d_entries.replace(pair.first, {record.getContent(), signatures, owner, std::move(next), record.d_ttl});
       }
     }
   }
@@ -393,13 +400,14 @@ bool AggressiveNSECCache::getNSECBefore(time_t now, std::shared_ptr<LockGuarded<
     return false;
   }
 
+  auto firstIndexIterator = zoneEntry->d_entries.project<ZoneEntry::OrderedTag>(it);
   if (it->d_ttd <= now) {
-    moveCacheItemToFront<ZoneEntry::SequencedTag>(zoneEntry->d_entries, it);
+    moveCacheItemToFront<ZoneEntry::SequencedTag>(zoneEntry->d_entries, firstIndexIterator);
     return false;
   }
 
   entry = *it;
-  moveCacheItemToBack<ZoneEntry::SequencedTag>(zoneEntry->d_entries, it);
+  moveCacheItemToBack<ZoneEntry::SequencedTag>(zoneEntry->d_entries, firstIndexIterator);
   return true;
 }
 
@@ -500,8 +508,9 @@ bool AggressiveNSECCache::synthesizeFromNSEC3Wildcard(time_t now, const DNSName&
     return false;
   }
 
-  addToRRSet(now, wcSet, wcSignatures, name, doDNSSEC, ret, DNSResourceRecord::ANSWER);
+  addToRRSet(now, wcSet, std::move(wcSignatures), name, doDNSSEC, ret, DNSResourceRecord::ANSWER);
   /* no need for closest encloser proof, the wildcard is there */
+  // coverity[store_truncates_time_t]
   addRecordToRRSet(nextCloser.d_owner, QType::NSEC3, nextCloser.d_ttd - now, nextCloser.d_record, nextCloser.d_signatures, doDNSSEC, ret);
   /* and of course we won't deny the wildcard either */
 
@@ -523,7 +532,8 @@ bool AggressiveNSECCache::synthesizeFromNSECWildcard(time_t now, const DNSName& 
     return false;
   }
 
-  addToRRSet(now, wcSet, wcSignatures, name, doDNSSEC, ret, DNSResourceRecord::ANSWER);
+  addToRRSet(now, wcSet, std::move(wcSignatures), name, doDNSSEC, ret, DNSResourceRecord::ANSWER);
+  // coverity[store_truncates_time_t]
   addRecordToRRSet(nsec.d_owner, QType::NSEC, nsec.d_ttd - now, nsec.d_record, nsec.d_signatures, doDNSSEC, ret);
 
   VLOG(log, name << ": Synthesized valid answer from NSECs and wildcard!" << endl);
@@ -532,7 +542,7 @@ bool AggressiveNSECCache::synthesizeFromNSECWildcard(time_t now, const DNSName& 
   return true;
 }
 
-bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded<AggressiveNSECCache::ZoneEntry>>& zoneEntry, std::vector<DNSRecord>& soaSet, std::vector<std::shared_ptr<const RRSIGRecordContent>>& soaSignatures, const DNSName& name, const QType& type, std::vector<DNSRecord>& ret, int& res, bool doDNSSEC, const OptLog& log)
+bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded<AggressiveNSECCache::ZoneEntry>>& zoneEntry, std::vector<DNSRecord>& soaSet, std::vector<std::shared_ptr<const RRSIGRecordContent>>& soaSignatures, const DNSName& name, const QType& type, std::vector<DNSRecord>& ret, int& res, bool doDNSSEC, const OptLog& log, pdns::validation::ValidationContext& validationContext)
 {
   DNSName zone;
   std::string salt;
@@ -548,7 +558,17 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
     iterations = entry->d_iterations;
   }
 
-  auto nameHash = DNSName(toBase32Hex(hashQNameWithSalt(salt, iterations, name))) + zone;
+  const auto zoneLabelsCount = zone.countLabels();
+  if (s_nsec3DenialProofMaxCost != 0) {
+    const auto worstCaseIterations = getNSEC3DenialProofWorstCaseIterationsCount(name.countLabels() - zoneLabelsCount, iterations, salt.length());
+    if (worstCaseIterations > s_nsec3DenialProofMaxCost) {
+      // skip NSEC3 aggressive cache for expensive NSEC3 parameters: "if you want us to take the pain of PRSD away from you, you need to make it cheap for us to do so"
+      VLOG(log, name << ": Skipping aggressive use of the NSEC3 cache since the zone parameters are too expensive" << endl);
+      return false;
+    }
+  }
+
+  auto nameHash = DNSName(toBase32Hex(getHashFromNSEC3(name, iterations, salt, validationContext))) + zone;
 
   ZoneEntry::CacheEntry exactNSEC3;
   if (getNSEC3(now, zoneEntry, nameHash, exactNSEC3)) {
@@ -595,8 +615,10 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
   DNSName closestEncloser(name);
   bool found = false;
   ZoneEntry::CacheEntry closestNSEC3;
-  while (!found && closestEncloser.chopOff()) {
-    auto closestHash = DNSName(toBase32Hex(hashQNameWithSalt(salt, iterations, closestEncloser))) + zone;
+  auto remainingLabels = closestEncloser.countLabels() - 1;
+  while (!found && closestEncloser.chopOff() && remainingLabels >= zoneLabelsCount) {
+    auto closestHash = DNSName(toBase32Hex(getHashFromNSEC3(closestEncloser, iterations, salt, validationContext))) + zone;
+    remainingLabels--;
 
     if (getNSEC3(now, zoneEntry, closestHash, closestNSEC3)) {
       VLOG(log, name << ": Found closest encloser at " << closestEncloser << " (" << closestHash << ")" << endl);
@@ -644,7 +666,7 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
   DNSName nsecFound;
   DNSName nextCloser(closestEncloser);
   nextCloser.prependRawLabel(name.getRawLabel(labelIdx - 1));
-  auto nextCloserHash = toBase32Hex(hashQNameWithSalt(salt, iterations, nextCloser));
+  auto nextCloserHash = toBase32Hex(getHashFromNSEC3(nextCloser, iterations, salt, validationContext));
   VLOG(log, name << ": Looking for a NSEC3 covering the next closer " << nextCloser << " (" << nextCloserHash << ")" << endl);
 
   ZoneEntry::CacheEntry nextCloserEntry;
@@ -673,7 +695,7 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
   /* An ancestor NSEC3 would be fine here, since it does prove that there is no delegation at the next closer
      name (we don't insert opt-out NSEC3s into the cache). */
   DNSName wildcard(g_wildcarddnsname + closestEncloser);
-  auto wcHash = toBase32Hex(hashQNameWithSalt(salt, iterations, wildcard));
+  auto wcHash = toBase32Hex(getHashFromNSEC3(wildcard, iterations, salt, validationContext));
   VLOG(log, name << ": Looking for a NSEC3 covering the wildcard " << wildcard << " (" << wcHash << ")" << endl);
 
   ZoneEntry::CacheEntry wcEntry;
@@ -749,6 +771,7 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
     addRecordToRRSet(nextCloserEntry.d_owner, QType::NSEC3, nextCloserEntry.d_ttd - now, nextCloserEntry.d_record, nextCloserEntry.d_signatures, doDNSSEC, ret);
   }
   if (wcEntry.d_owner != closestNSEC3.d_owner && wcEntry.d_owner != nextCloserEntry.d_owner) {
+    // coverity[store_truncates_time_t]
     addRecordToRRSet(wcEntry.d_owner, QType::NSEC3, wcEntry.d_ttd - now, wcEntry.d_record, wcEntry.d_signatures, doDNSSEC, ret);
   }
 
@@ -757,7 +780,7 @@ bool AggressiveNSECCache::getNSEC3Denial(time_t now, std::shared_ptr<LockGuarded
   return true;
 }
 
-bool AggressiveNSECCache::getDenial(time_t now, const DNSName& name, const QType& type, std::vector<DNSRecord>& ret, int& res, const ComboAddress& who, const boost::optional<std::string>& routingTag, bool doDNSSEC, const OptLog& log)
+bool AggressiveNSECCache::getDenial(time_t now, const DNSName& name, const QType& type, std::vector<DNSRecord>& ret, int& res, const ComboAddress& who, const boost::optional<std::string>& routingTag, bool doDNSSEC, pdns::validation::ValidationContext& validationContext, const OptLog& log)
 {
   std::shared_ptr<LockGuarded<ZoneEntry>> zoneEntry;
   if (type == QType::DS) {
@@ -797,7 +820,7 @@ bool AggressiveNSECCache::getDenial(time_t now, const DNSName& name, const QType
   }
 
   if (nsec3) {
-    return getNSEC3Denial(now, zoneEntry, soaSet, soaSignatures, name, type, ret, res, doDNSSEC, log);
+    return getNSEC3Denial(now, zoneEntry, soaSet, soaSignatures, name, type, ret, res, doDNSSEC, log, validationContext);
   }
 
   ZoneEntry::CacheEntry entry;
@@ -877,10 +900,12 @@ bool AggressiveNSECCache::getDenial(time_t now, const DNSName& name, const QType
 
   ret.reserve(ret.size() + soaSet.size() + soaSignatures.size() + /* NSEC */ 1 + entry.d_signatures.size() + (needWildcard ? (/* NSEC */ 1 + wcEntry.d_signatures.size()) : 0));
 
-  addToRRSet(now, soaSet, soaSignatures, zone, doDNSSEC, ret);
+  addToRRSet(now, soaSet, std::move(soaSignatures), zone, doDNSSEC, ret);
+  // coverity[store_truncates_time_t]
   addRecordToRRSet(entry.d_owner, QType::NSEC, entry.d_ttd - now, entry.d_record, entry.d_signatures, doDNSSEC, ret);
 
   if (needWildcard) {
+    // coverity[store_truncates_time_t]
     addRecordToRRSet(wcEntry.d_owner, QType::NSEC, wcEntry.d_ttd - now, wcEntry.d_record, wcEntry.d_signatures, doDNSSEC, ret);
   }
 
@@ -889,33 +914,33 @@ bool AggressiveNSECCache::getDenial(time_t now, const DNSName& name, const QType
   return true;
 }
 
-size_t AggressiveNSECCache::dumpToFile(std::unique_ptr<FILE, int (*)(FILE*)>& fp, const struct timeval& now)
+size_t AggressiveNSECCache::dumpToFile(pdns::UniqueFilePtr& filePtr, const struct timeval& now)
 {
   size_t ret = 0;
 
   auto zones = d_zones.read_lock();
-  zones->visit([&ret, now, &fp](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
+  zones->visit([&ret, now, &filePtr](const SuffixMatchTree<std::shared_ptr<LockGuarded<ZoneEntry>>>& node) {
     if (!node.d_value) {
       return;
     }
 
     auto zone = node.d_value->lock();
-    fprintf(fp.get(), "; Zone %s\n", zone->d_zone.toString().c_str());
+    fprintf(filePtr.get(), "; Zone %s\n", zone->d_zone.toString().c_str());
 
     for (const auto& entry : zone->d_entries) {
       int64_t ttl = entry.d_ttd - now.tv_sec;
       try {
-        fprintf(fp.get(), "%s %" PRId64 " IN %s %s\n", entry.d_owner.toString().c_str(), ttl, zone->d_nsec3 ? "NSEC3" : "NSEC", entry.d_record->getZoneRepresentation().c_str());
+        fprintf(filePtr.get(), "%s %" PRId64 " IN %s %s\n", entry.d_owner.toString().c_str(), ttl, zone->d_nsec3 ? "NSEC3" : "NSEC", entry.d_record->getZoneRepresentation().c_str());
         for (const auto& signature : entry.d_signatures) {
-          fprintf(fp.get(), "- RRSIG %s\n", signature->getZoneRepresentation().c_str());
+          fprintf(filePtr.get(), "- RRSIG %s\n", signature->getZoneRepresentation().c_str());
         }
         ++ret;
       }
       catch (const std::exception& e) {
-        fprintf(fp.get(), "; Error dumping record from zone %s: %s\n", zone->d_zone.toString().c_str(), e.what());
+        fprintf(filePtr.get(), "; Error dumping record from zone %s: %s\n", zone->d_zone.toString().c_str(), e.what());
       }
       catch (...) {
-        fprintf(fp.get(), "; Error dumping record from zone %s\n", zone->d_zone.toString().c_str());
+        fprintf(filePtr.get(), "; Error dumping record from zone %s\n", zone->d_zone.toString().c_str());
       }
     }
   });

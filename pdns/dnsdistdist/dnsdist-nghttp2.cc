@@ -22,11 +22,12 @@
 
 #include "config.h"
 
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
 #include <nghttp2/nghttp2.h>
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 
 #include "dnsdist-nghttp2.hh"
+#include "dnsdist-nghttp2-in.hh"
 #include "dnsdist-tcp.hh"
 #include "dnsdist-tcp-downstream.hh"
 #include "dnsdist-downstream-connection.hh"
@@ -44,7 +45,7 @@ std::atomic<uint64_t> g_dohStatesDumpRequested{0};
 std::unique_ptr<DoHClientCollection> g_dohClientThreads{nullptr};
 std::optional<uint16_t> g_outgoingDoHWorkerThreads{std::nullopt};
 
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
 class DoHConnectionToBackend : public ConnectionToBackend
 {
 public:
@@ -69,8 +70,9 @@ public:
   bool reachedMaxConcurrentQueries() const override;
   bool reachedMaxStreamID() const override;
   bool isIdle() const override;
-  void release() override
+  void release(bool removeFromCache) override
   {
+    (void)removeFromCache;
   }
 
 private:
@@ -83,9 +85,6 @@ private:
   static void handleReadableIOCallback(int fd, FDMultiplexer::funcparam_t& param);
   static void handleWritableIOCallback(int fd, FDMultiplexer::funcparam_t& param);
 
-  static void addStaticHeader(std::vector<nghttp2_nv>& headers, const std::string& nameKey, const std::string& valueKey);
-  static void addDynamicHeader(std::vector<nghttp2_nv>& headers, const std::string& nameKey, const std::string& value);
-
   class PendingRequest
   {
   public:
@@ -96,8 +95,7 @@ private:
     uint16_t d_responseCode{0};
     bool d_finished{false};
   };
-  void addToIOState(IOState state, FDMultiplexer::callbackfunc_t callback);
-  void updateIO(IOState newState, FDMultiplexer::callbackfunc_t callback, bool noTTD = false);
+  void updateIO(IOState newState, const FDMultiplexer::callbackfunc_t& callback, bool noTTD = false);
   void watchForRemoteHostClosingConnection();
   void handleResponse(PendingRequest&& request);
   void handleResponseError(PendingRequest&& request, const struct timeval& now);
@@ -153,7 +151,11 @@ void DoHConnectionToBackend::handleResponse(PendingRequest&& request)
       }
     }
 
-    request.d_sender->handleResponse(now, TCPResponse(std::move(request.d_buffer), std::move(request.d_query.d_idstate), shared_from_this(), d_ds));
+    TCPResponse response(std::move(request.d_query));
+    response.d_buffer = std::move(request.d_buffer);
+    response.d_connection = shared_from_this();
+    response.d_ds = d_ds;
+    request.d_sender->handleResponse(now, std::move(response));
   }
   catch (const std::exception& e) {
     vinfolog("Got exception while handling response for cross-protocol DoH: %s", e.what());
@@ -167,7 +169,8 @@ void DoHConnectionToBackend::handleResponseError(PendingRequest&& request, const
       d_ds->reportTimeoutOrError();
     }
 
-    request.d_sender->notifyIOError(std::move(request.d_query.d_idstate), now);
+    TCPResponse response(PacketBuffer(), std::move(request.d_query.d_idstate), nullptr, nullptr);
+    request.d_sender->notifyIOError(now, std::move(response));
   }
   catch (const std::exception& e) {
     vinfolog("Got exception while handling response for cross-protocol DoH: %s", e.what());
@@ -230,45 +233,6 @@ bool DoHConnectionToBackend::isIdle() const
   return getConcurrentStreamsCount() == 0;
 }
 
-const std::unordered_map<std::string, std::string> DoHConnectionToBackend::s_constants = {
-  {"method-name", ":method"},
-  {"method-value", "POST"},
-  {"scheme-name", ":scheme"},
-  {"scheme-value", "https"},
-  {"accept-name", "accept"},
-  {"accept-value", "application/dns-message"},
-  {"content-type-name", "content-type"},
-  {"content-type-value", "application/dns-message"},
-  {"user-agent-name", "user-agent"},
-  {"user-agent-value", "nghttp2-" NGHTTP2_VERSION "/dnsdist"},
-  {"authority-name", ":authority"},
-  {"path-name", ":path"},
-  {"content-length-name", "content-length"},
-  {"x-forwarded-for-name", "x-forwarded-for"},
-  {"x-forwarded-port-name", "x-forwarded-port"},
-  {"x-forwarded-proto-name", "x-forwarded-proto"},
-  {"x-forwarded-proto-value-dns-over-udp", "dns-over-udp"},
-  {"x-forwarded-proto-value-dns-over-tcp", "dns-over-tcp"},
-  {"x-forwarded-proto-value-dns-over-tls", "dns-over-tls"},
-  {"x-forwarded-proto-value-dns-over-http", "dns-over-http"},
-  {"x-forwarded-proto-value-dns-over-https", "dns-over-https"},
-};
-
-void DoHConnectionToBackend::addStaticHeader(std::vector<nghttp2_nv>& headers, const std::string& nameKey, const std::string& valueKey)
-{
-  const auto& name = s_constants.at(nameKey);
-  const auto& value = s_constants.at(valueKey);
-
-  headers.push_back({const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(name.c_str())), const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(value.c_str())), name.size(), value.size(), NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE});
-}
-
-void DoHConnectionToBackend::addDynamicHeader(std::vector<nghttp2_nv>& headers, const std::string& nameKey, const std::string& value)
-{
-  const auto& name = s_constants.at(nameKey);
-
-  headers.push_back({const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(name.c_str())), const_cast<uint8_t*>(reinterpret_cast<const uint8_t*>(value.c_str())), name.size(), value.size(), NGHTTP2_NV_FLAG_NO_COPY_NAME | NGHTTP2_NV_FLAG_NO_COPY_VALUE});
-}
-
 void DoHConnectionToBackend::queueQuery(std::shared_ptr<TCPQuerySender>& sender, TCPQuery&& query)
 {
   auto payloadSize = std::to_string(query.d_buffer.size());
@@ -284,37 +248,37 @@ void DoHConnectionToBackend::queueQuery(std::shared_ptr<TCPQuerySender>& sender,
   headers.reserve(8 + (addXForwarded ? 3 : 0));
 
   /* Pseudo-headers need to come first (rfc7540 8.1.2.1) */
-  addStaticHeader(headers, "method-name", "method-value");
-  addStaticHeader(headers, "scheme-name", "scheme-value");
-  addDynamicHeader(headers, "authority-name", d_ds->d_config.d_tlsSubjectName);
-  addDynamicHeader(headers, "path-name", d_ds->d_config.d_dohPath);
-  addStaticHeader(headers, "accept-name", "accept-value");
-  addStaticHeader(headers, "content-type-name", "content-type-value");
-  addStaticHeader(headers, "user-agent-name", "user-agent-value");
-  addDynamicHeader(headers, "content-length-name", payloadSize);
+  NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::METHOD_NAME, NGHTTP2Headers::HeaderConstantIndexes::METHOD_VALUE);
+  NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::SCHEME_NAME, NGHTTP2Headers::HeaderConstantIndexes::SCHEME_VALUE);
+  NGHTTP2Headers::addDynamicHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::AUTHORITY_NAME, d_ds->d_config.d_tlsSubjectName);
+  NGHTTP2Headers::addDynamicHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::PATH_NAME, d_ds->d_config.d_dohPath);
+  NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::ACCEPT_NAME, NGHTTP2Headers::HeaderConstantIndexes::ACCEPT_VALUE);
+  NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::CONTENT_TYPE_NAME, NGHTTP2Headers::HeaderConstantIndexes::CONTENT_TYPE_VALUE);
+  NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::USER_AGENT_NAME, NGHTTP2Headers::HeaderConstantIndexes::USER_AGENT_VALUE);
+  NGHTTP2Headers::addDynamicHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::CONTENT_LENGTH_NAME, payloadSize);
   /* no need to add these headers for health-check queries */
   if (addXForwarded && query.d_idstate.origRemote.getPort() != 0) {
     remote = query.d_idstate.origRemote.toString();
     remotePort = std::to_string(query.d_idstate.origRemote.getPort());
-    addDynamicHeader(headers, "x-forwarded-for-name", remote);
-    addDynamicHeader(headers, "x-forwarded-port-name", remotePort);
+    NGHTTP2Headers::addDynamicHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_FOR_NAME, remote);
+    NGHTTP2Headers::addDynamicHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PORT_NAME, remotePort);
     if (query.d_idstate.cs != nullptr) {
       if (query.d_idstate.cs->isUDP()) {
-        addStaticHeader(headers, "x-forwarded-proto-name", "x-forwarded-proto-value-dns-over-udp");
+        NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_NAME, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_VALUE_DNS_OVER_UDP);
       }
       else if (query.d_idstate.cs->isDoH()) {
         if (query.d_idstate.cs->hasTLS()) {
-          addStaticHeader(headers, "x-forwarded-proto-name", "x-forwarded-proto-value-dns-over-https");
+          NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_NAME, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_VALUE_DNS_OVER_HTTPS);
         }
         else {
-          addStaticHeader(headers, "x-forwarded-proto-name", "x-forwarded-proto-value-dns-over-http");
+          NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_NAME, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_VALUE_DNS_OVER_HTTP);
         }
       }
       else if (query.d_idstate.cs->hasTLS()) {
-        addStaticHeader(headers, "x-forwarded-proto-name", "x-forwarded-proto-value-dns-over-tls");
+        NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_NAME, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_VALUE_DNS_OVER_TLS);
       }
       else {
-        addStaticHeader(headers, "x-forwarded-proto-name", "x-forwarded-proto-value-dns-over-tcp");
+        NGHTTP2Headers::addStaticHeader(headers, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_NAME, NGHTTP2Headers::HeaderConstantIndexes::X_FORWARDED_PROTO_VALUE_DNS_OVER_TCP);
       }
     }
   }
@@ -336,10 +300,9 @@ void DoHConnectionToBackend::queueQuery(std::shared_ptr<TCPQuerySender>& sender,
    */
   nghttp2_data_provider data_provider;
 
-  /* we will not use this pointer */
   data_provider.source.ptr = this;
   data_provider.read_callback = [](nghttp2_session* session, int32_t stream_id, uint8_t* buf, size_t length, uint32_t* data_flags, nghttp2_data_source* source, void* user_data) -> ssize_t {
-    auto conn = reinterpret_cast<DoHConnectionToBackend*>(user_data);
+    auto* conn = static_cast<DoHConnectionToBackend*>(user_data);
     auto& request = conn->d_currentStreams.at(stream_id);
     size_t toCopy = 0;
     if (request.d_queryPos < request.d_query.d_buffer.size()) {
@@ -506,7 +469,7 @@ void DoHConnectionToBackend::stopIO()
   }
 }
 
-void DoHConnectionToBackend::updateIO(IOState newState, FDMultiplexer::callbackfunc_t callback, bool noTTD)
+void DoHConnectionToBackend::updateIO(IOState newState, const FDMultiplexer::callbackfunc_t& callback, bool noTTD)
 {
   struct timeval now
   {
@@ -534,10 +497,10 @@ void DoHConnectionToBackend::updateIO(IOState newState, FDMultiplexer::callbackf
   auto shared = std::dynamic_pointer_cast<DoHConnectionToBackend>(shared_from_this());
   if (shared) {
     if (newState == IOState::NeedRead) {
-      d_ioState->update(newState, callback, shared, ttd);
+      d_ioState->update(newState, callback, std::move(shared), ttd);
     }
     else if (newState == IOState::NeedWrite) {
-      d_ioState->update(newState, callback, shared, ttd);
+      d_ioState->update(newState, callback, std::move(shared), ttd);
     }
   }
 }
@@ -546,37 +509,6 @@ void DoHConnectionToBackend::watchForRemoteHostClosingConnection()
 {
   if (willBeReusable(false) && !d_healthCheckQuery) {
     updateIO(IOState::NeedRead, handleReadableIOCallback, false);
-  }
-}
-
-void DoHConnectionToBackend::addToIOState(IOState state, FDMultiplexer::callbackfunc_t callback)
-{
-  struct timeval now
-  {
-    .tv_sec = 0, .tv_usec = 0
-  };
-
-  gettimeofday(&now, nullptr);
-  boost::optional<struct timeval> ttd{boost::none};
-  if (state == IOState::NeedRead) {
-    ttd = getBackendReadTTD(now);
-  }
-  else if (isFresh() && d_firstWrite == 0) {
-    /* first write just after the non-blocking connect */
-    ttd = getBackendConnectTTD(now);
-  }
-  else {
-    ttd = getBackendWriteTTD(now);
-  }
-
-  auto shared = std::dynamic_pointer_cast<DoHConnectionToBackend>(shared_from_this());
-  if (shared) {
-    if (state == IOState::NeedRead) {
-      d_ioState->add(state, callback, shared, ttd);
-    }
-    else if (state == IOState::NeedWrite) {
-      d_ioState->add(state, callback, shared, ttd);
-    }
   }
 }
 
@@ -920,7 +852,8 @@ static void handleCrossProtocolQuery(int pipefd, FDMultiplexer::funcparam_t& par
     downstream->queueQuery(tqs, std::move(query));
   }
   catch (...) {
-    tqs->notifyIOError(std::move(query.d_idstate), now);
+    TCPResponse response(std::move(query));
+    tqs->notifyIOError(now, std::move(response));
   }
 }
 
@@ -957,31 +890,31 @@ static void dohClientThread(pdns::channel::Receiver<CrossProtocolQuery>&& receiv
             if (g_dohStatesDumpRequested > 0) {
               /* no race here, we took the lock so it can only be increased in the meantime */
               --g_dohStatesDumpRequested;
-              errlog("Dumping the DoH client states, as requested:");
+              infolog("Dumping the DoH client states, as requested:");
               data.mplexer->runForAllWatchedFDs([](bool isRead, int fd, const FDMultiplexer::funcparam_t& param, struct timeval ttd) {
                 struct timeval lnow;
                 gettimeofday(&lnow, nullptr);
                 if (ttd.tv_sec > 0) {
-                  errlog("- Descriptor %d is in %s state, TTD in %d", fd, (isRead ? "read" : "write"), (ttd.tv_sec - lnow.tv_sec));
+                  infolog("- Descriptor %d is in %s state, TTD in %d", fd, (isRead ? "read" : "write"), (ttd.tv_sec - lnow.tv_sec));
                 }
                 else {
-                  errlog("- Descriptor %d is in %s state, no TTD set", fd, (isRead ? "read" : "write"));
+                  infolog("- Descriptor %d is in %s state, no TTD set", fd, (isRead ? "read" : "write"));
                 }
 
                 if (param.type() == typeid(std::shared_ptr<DoHConnectionToBackend>)) {
                   auto conn = boost::any_cast<std::shared_ptr<DoHConnectionToBackend>>(param);
-                  errlog(" - %s", conn->toString());
+                  infolog(" - %s", conn->toString());
                 }
                 else if (param.type() == typeid(DoHClientThreadData*)) {
-                  errlog(" - Worker thread pipe");
+                  infolog(" - Worker thread pipe");
                 }
               });
-              errlog("The DoH client cache has %d active and %d idle outgoing connections cached", t_downstreamDoHConnectionsManager.getActiveCount(), t_downstreamDoHConnectionsManager.getIdleCount());
+              infolog("The DoH client cache has %d active and %d idle outgoing connections cached", t_downstreamDoHConnectionsManager.getActiveCount(), t_downstreamDoHConnectionsManager.getIdleCount());
             }
           }
         }
         catch (const std::exception& e) {
-          errlog("Error in outgoing DoH thread: %s", e.what());
+          warnlog("Error in outgoing DoH thread: %s", e.what());
         }
       }
     }
@@ -1000,7 +933,7 @@ static bool select_next_proto_callback(unsigned char** out, unsigned char* outle
   return true;
 }
 
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 
 struct DoHClientCollection::DoHWorkerThread
 {
@@ -1052,9 +985,9 @@ bool DoHClientCollection::passCrossProtocolQueryToThread(std::unique_ptr<CrossPr
 
 void DoHClientCollection::addThread()
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   try {
-    auto [sender, receiver] = pdns::channel::createObjectQueue<CrossProtocolQuery>(true, true, g_tcpInternalPipeBufferSize);
+    auto [sender, receiver] = pdns::channel::createObjectQueue<CrossProtocolQuery>(pdns::channel::SenderBlockingMode::SenderNonBlocking, pdns::channel::ReceiverBlockingMode::ReceiverNonBlocking, g_tcpInternalPipeBufferSize);
 
     vinfolog("Adding DoH Client thread");
     std::lock_guard<std::mutex> lock(d_mutex);
@@ -1082,14 +1015,14 @@ void DoHClientCollection::addThread()
     errlog("Error creating the DoH channel: %s", e.what());
     return;
   }
-#else /* HAVE_NGHTTP2 */
+#else /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
   throw std::runtime_error("DoHClientCollection::addThread() called but nghttp2 support is not available");
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 bool initDoHWorkers()
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   if (!g_outgoingDoHWorkerThreads) {
     /* Unless the value has been set to 0 explicitly, always start at least one outgoing DoH worker thread, in case a DoH backend
        is added at a later time. */
@@ -1105,7 +1038,7 @@ bool initDoHWorkers()
   return true;
 #else
   return false;
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 bool setupDoHClientProtocolNegotiation(std::shared_ptr<TLSCtx>& ctx)
@@ -1113,20 +1046,20 @@ bool setupDoHClientProtocolNegotiation(std::shared_ptr<TLSCtx>& ctx)
   if (ctx == nullptr) {
     return false;
   }
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   /* we want to set the ALPN to h2, if only to mitigate the ALPACA attack */
   const std::vector<std::vector<uint8_t>> h2Alpns = {{'h', '2'}};
   ctx->setALPNProtos(h2Alpns);
   ctx->setNextProtocolSelectCallback(select_next_proto_callback);
   return true;
-#else /* HAVE_NGHTTP2 */
+#else /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
   return false;
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 bool sendH2Query(const std::shared_ptr<DownstreamState>& ds, std::unique_ptr<FDMultiplexer>& mplexer, std::shared_ptr<TCPQuerySender>& sender, InternalQuery&& query, bool healthCheck)
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   struct timeval now
   {
     .tv_sec = 0, .tv_usec = 0
@@ -1145,24 +1078,24 @@ bool sendH2Query(const std::shared_ptr<DownstreamState>& ds, std::unique_ptr<FDM
   }
 
   return true;
-#else /* HAVE_NGHTTP2 */
+#else /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
   return false;
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 size_t clearH2Connections()
 {
   size_t cleared = 0;
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   cleared = t_downstreamDoHConnectionsManager.clear();
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
   return cleared;
 }
 
 size_t handleH2Timeouts(FDMultiplexer& mplexer, const struct timeval& now)
 {
   size_t got = 0;
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   auto expiredReadConns = mplexer.getTimeouts(now, false);
   for (const auto& cbData : expiredReadConns) {
     if (cbData.second.type() == typeid(std::shared_ptr<DoHConnectionToBackend>)) {
@@ -1182,27 +1115,27 @@ size_t handleH2Timeouts(FDMultiplexer& mplexer, const struct timeval& now)
       ++got;
     }
   }
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
   return got;
 }
 
 void setDoHDownstreamCleanupInterval(uint16_t max)
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   DownstreamDoHConnectionsManager::setCleanupInterval(max);
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 void setDoHDownstreamMaxIdleTime(uint16_t max)
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   DownstreamDoHConnectionsManager::setMaxIdleTime(max);
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }
 
 void setDoHDownstreamMaxIdleConnectionsPerBackend(size_t max)
 {
-#ifdef HAVE_NGHTTP2
+#if defined(HAVE_DNS_OVER_HTTPS) && defined(HAVE_NGHTTP2)
   DownstreamDoHConnectionsManager::setMaxIdleConnectionsPerDownstream(max);
-#endif /* HAVE_NGHTTP2 */
+#endif /* HAVE_DNS_OVER_HTTPS && HAVE_NGHTTP2 */
 }

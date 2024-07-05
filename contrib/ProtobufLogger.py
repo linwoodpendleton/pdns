@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import binascii
 import datetime
@@ -139,7 +139,7 @@ class PDNSPBConnHandler(object):
             if response.HasField('queryTimeSec'):
                 datestr = datetime.datetime.fromtimestamp(response.queryTimeSec).strftime('%Y-%m-%d %H:%M:%S')
                 if response.HasField('queryTimeUsec'):
-                    datestr = datestr + '.' + str(response.queryTimeUsec)
+                    datestr = datestr + '.' + ("%06d" % response.queryTimeUsec)
                 print("- Query time: %s" % (datestr))
 
             policystr = ''
@@ -166,21 +166,21 @@ class PDNSPBConnHandler(object):
             for rr in response.rrs:
                 rrclass = 1
                 rdatastr = ''
-                rrudr = 0
+                rrudr = 'N/A'
                 if rr.HasField('class'):
                     rrclass = getattr(rr, 'class')
                 rrtype = rr.type
                 if rr.HasField('udr'):
-                    rrudr = rr.udr
+                    rrudr = str(rr.udr)
                 if (rrclass == 1 or rrclass == 255) and rr.HasField('rdata'):
                     if rrtype == 1:
                         rdatastr = socket.inet_ntop(socket.AF_INET, rr.rdata)
-                    elif rrtype == 5:
+                    elif rrtype in (5, 35, 64, 65):
                         rdatastr = rr.rdata
                     elif rrtype == 28:
                         rdatastr = socket.inet_ntop(socket.AF_INET6, rr.rdata)
 
-                print("\t - %d, %d, %s, %d, %s, %d" % (rrclass,
+                print("\t - %d, %d, %s, %d, %s, %s" % (rrclass,
                                                    rrtype,
                                                    rr.name,
                                                    rr.ttl,
@@ -190,7 +190,7 @@ class PDNSPBConnHandler(object):
     def printSummary(self, msg, typestr):
         datestr = datetime.datetime.fromtimestamp(msg.timeSec).strftime('%Y-%m-%d %H:%M:%S')
         if msg.HasField('timeUsec'):
-            datestr = datestr + '.' + str(msg.timeUsec)
+            datestr = datestr + '.' + ("%06d" % msg.timeUsec)
         ipfromstr = 'N/A'
         iptostr = 'N/A'
         toportstr = ''
@@ -241,12 +241,24 @@ class PDNSPBConnHandler(object):
         if msg.HasField('requestorId'):
             requestorId = msg.requestorId
 
-        nod = 0
+        nod = 'N/A';
         if msg.HasField('newlyObservedDomain'):
-            nod = msg.newlyObservedDomain
+            nod = str(msg.newlyObservedDomain)
+
+        workerId = 'N/A'
+        if msg.HasField('workerId'):
+           workerId = str(msg.workerId)
+
+        pcCacheHit = 'N/A'
+        if msg.HasField('packetCacheHit'):
+           pcCacheHit = str(msg.packetCacheHit)
+
+        outgoingQs = 'N/A'
+        if msg.HasField('outgoingQueries'):
+           outgoingQs = str(msg.outgoingQueries)
 
         print('[%s] %s of size %d: %s%s%s -> %s%s(%s) id: %d uuid: %s%s '
-                  'requestorid: %s deviceid: %s devicename: %s serverid: %s nod: %d' % (datestr,
+                  'requestorid: %s deviceid: %s devicename: %s serverid: %s nod: %s workerId: %s pcCacheHit: %s outgoingQueries: %s' % (datestr,
                                                     typestr,
                                                     msg.inBytes,
                                                     ipfromstr,
@@ -262,16 +274,19 @@ class PDNSPBConnHandler(object):
                                                     deviceId,
                                                     deviceName,
                                                     serveridstr,
-                                                    nod))
+                                                    nod,
+                                                    workerId,
+                                                    pcCacheHit,
+                                                    outgoingQs))
 
         for mt in msg.meta:
             values = ''
             for entry in mt.value.stringVal:
                 values = ', '.join([values, entry]) if values != '' else entry
             for entry in mt.value.intVal:
-                values = ', '.join([values, entry]) if values != '' else entry
+                values = ', '.join([values, str(entry)]) if values != '' else str(entry)
 
-            print('- %s -> %s' % (mt.key, values))
+            print('- (meta) %s -> %s' % (mt.key, values))
 
     def getRequestorSubnet(self, msg):
         requestorstr = None
@@ -312,7 +327,7 @@ class PDNSPBListener(object):
             thread = threading.Thread(name='Connection Handler',
                                       target=PDNSPBConnHandler.run,
                                       args=[handler])
-            thread.setDaemon(True)
+            thread.daemon = True
             thread.start()
 
         self._sock.close()

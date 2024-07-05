@@ -19,7 +19,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #include <boost/test/unit_test.hpp>
@@ -91,6 +94,8 @@ BOOST_AUTO_TEST_CASE(test_Query)
     BOOST_REQUIRE_EQUAL(bufferSize, sizeof(ids.origRemote.sin4.sin_addr.s_addr));
     BOOST_CHECK(memcmp(buffer, &ids.origRemote.sin4.sin_addr.s_addr, sizeof(ids.origRemote.sin4.sin_addr.s_addr)) == 0);
     BOOST_CHECK_EQUAL(dnsdist_ffi_dnsquestion_get_remote_port(&lightDQ), 4242U);
+    BOOST_CHECK(!dnsdist_ffi_dnsquestion_is_remote_v6(nullptr));
+    BOOST_CHECK(!dnsdist_ffi_dnsquestion_is_remote_v6(&lightDQ));
   }
 
   {
@@ -207,10 +212,6 @@ BOOST_AUTO_TEST_CASE(test_Query)
     BOOST_CHECK_EQUAL(dnsdist_ffi_dnsquestion_get_use_ecs(&lightDQ), true);
     dnsdist_ffi_dnsquestion_set_use_ecs(&lightDQ, false);
     BOOST_CHECK_EQUAL(dnsdist_ffi_dnsquestion_get_use_ecs(&lightDQ), false);
-  }
-
-  {
-    BOOST_CHECK_EQUAL(dnsdist_ffi_dnsquestion_get_add_xpf(&lightDQ), true);
   }
 
   {
@@ -466,7 +467,7 @@ BOOST_AUTO_TEST_CASE(test_PacketCache)
   ids.queryRealTime.start();
   DNSQuestion dq(ids, query);
   packetCache->get(dq, 0, &key, subnet, dnssecOK, receivedOverUDP);
-  packetCache->insert(key, subnet, *(getFlagsFromDNSHeader(dq.getHeader())), dnssecOK, ids.qname, QType::A, QClass::IN, response, receivedOverUDP, 0, boost::none);
+  packetCache->insert(key, subnet, *(getFlagsFromDNSHeader(dq.getHeader().get())), dnssecOK, ids.qname, QType::A, QClass::IN, response, receivedOverUDP, 0, boost::none);
 
   std::string poolName("test-pool");
   auto testPool = std::make_shared<ServerPool>();
@@ -571,6 +572,53 @@ BOOST_AUTO_TEST_CASE(test_ProxyProtocol)
   {
     auto got = dnsdist_ffi_generate_proxy_protocol_payload(sizeof(v4.sin4.sin_addr.s_addr), &v4.sin4.sin_addr.s_addr, &v4.sin4.sin_addr.s_addr, 4242U, 53U, true, values.size(), values.data(), output.data(), output.size());
     BOOST_CHECK_EQUAL(got, 41U);
+  }
+}
+
+BOOST_AUTO_TEST_CASE(test_ProxyProtocolQuery)
+{
+  InternalQueryState ids;
+  ids.origRemote = ComboAddress("192.0.2.1:4242");
+  ids.origDest = ComboAddress("192.0.2.255:53");
+  ids.qtype = QType::A;
+  ids.qclass = QClass::IN;
+  ids.protocol = dnsdist::Protocol::DoUDP;
+  ids.qname = DNSName("www.powerdns.com.");
+  ids.queryRealTime.start();
+  PacketBuffer query;
+  GenericDNSPacketWriter<PacketBuffer> pwQ(query, ids.qname, QType::A, QClass::IN, 0);
+  pwQ.getHeader()->rd = 1;
+  pwQ.getHeader()->id = htons(42);
+
+  DNSQuestion dnsQuestion(ids, query);
+  dnsdist_ffi_dnsquestion_t lightDQ(&dnsQuestion);
+
+  std::vector<dnsdist_ffi_proxy_protocol_value> values;
+  values.push_back({"test-value", 10U, 1U});
+
+  {
+    auto added = dnsdist_ffi_dnsquestion_add_proxy_protocol_values(nullptr, values.size(), values.data());
+    BOOST_CHECK_EQUAL(added, false);
+  }
+
+  {
+    auto added = dnsdist_ffi_dnsquestion_add_proxy_protocol_values(&lightDQ, 0, values.data());
+    BOOST_CHECK_EQUAL(added, false);
+  }
+
+  {
+    auto added = dnsdist_ffi_dnsquestion_add_proxy_protocol_values(&lightDQ, values.size(), nullptr);
+    BOOST_CHECK_EQUAL(added, false);
+  }
+
+  {
+    auto added = dnsdist_ffi_dnsquestion_add_proxy_protocol_values(&lightDQ, values.size(), values.data());
+    BOOST_CHECK_EQUAL(added, true);
+    BOOST_REQUIRE(dnsQuestion.proxyProtocolValues != nullptr);
+    BOOST_REQUIRE_EQUAL(dnsQuestion.proxyProtocolValues->size(), values.size());
+    BOOST_CHECK_EQUAL(dnsQuestion.proxyProtocolValues->at(0).type, values.at(0).type);
+    BOOST_REQUIRE_EQUAL(dnsQuestion.proxyProtocolValues->at(0).content.size(), values.at(0).size);
+    BOOST_CHECK_EQUAL(memcmp(dnsQuestion.proxyProtocolValues->at(0).content.data(), values.at(0).value, values.at(0).size), 0);
   }
 }
 
@@ -684,6 +732,12 @@ BOOST_AUTO_TEST_CASE(test_RingBuffers)
 {
   dnsheader dh;
   memset(&dh, 0, sizeof(dh));
+  dh.id = htons(42);
+  dh.rd = 1;
+  dh.ancount = htons(1);
+  dh.nscount = htons(1);
+  dh.arcount = htons(1);
+  dh.rcode = RCode::NXDomain;
   DNSName qname("rings.luaffi.powerdns.com.");
   ComboAddress requestor1("192.0.2.1");
   ComboAddress backend("192.0.2.42");
@@ -716,11 +770,22 @@ BOOST_AUTO_TEST_CASE(test_RingBuffers)
     BOOST_CHECK_EQUAL(dnsdist_ffi_ring_get_entries_by_mac(nullptr, nullptr), 0U);
     BOOST_CHECK(list == nullptr);
     BOOST_CHECK(!dnsdist_ffi_ring_entry_is_response(nullptr, 0));
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_age(nullptr, 0) == 0.0);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_name(nullptr, 0) == nullptr);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_type(nullptr, 0) == 0);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_requestor(nullptr, 0) == nullptr);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_backend(nullptr, 0) == nullptr);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_protocol(nullptr, 0) == 0);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_size(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_latency(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_id(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_rcode(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_aa(nullptr, 0) == false);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_rd(nullptr, 0) == false);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_tc(nullptr, 0) == false);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_ancount(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_nscount(nullptr, 0) == 0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_arcount(nullptr, 0) == 0);
     BOOST_CHECK(!dnsdist_ffi_ring_entry_has_mac_address(nullptr, 0));
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_mac_address(nullptr, 0) == nullptr);
   }
@@ -732,11 +797,25 @@ BOOST_AUTO_TEST_CASE(test_RingBuffers)
   BOOST_CHECK(dnsdist_ffi_ring_entry_is_response(list, 1));
 
   for (size_t idx = 0; idx < 2; idx++) {
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_age(list, idx) >= 0.0);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_age(list, idx) < 2.0);
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_name(list, idx) == qname.toString());
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_type(list, idx) == qtype);
-    BOOST_CHECK(dnsdist_ffi_ring_entry_get_requestor(list, idx) == requestor1.toString());
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_requestor(list, idx) == requestor1.toStringWithPort());
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_protocol(list, idx) == protocol.toNumber());
     BOOST_CHECK_EQUAL(dnsdist_ffi_ring_entry_get_size(list, idx), size);
+    BOOST_CHECK_EQUAL(dnsdist_ffi_ring_entry_get_id(list, idx), 42U);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_aa(list, idx) == false);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_rd(list, idx) == true);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_tc(list, idx) == false);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_ancount(list, idx) == 1);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_nscount(list, idx) == 1);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_arcount(list, idx) == 1);
+    BOOST_CHECK(dnsdist_ffi_ring_entry_get_rcode(list, idx) == RCode::NXDomain);
+    if (dnsdist_ffi_ring_entry_is_response(list, idx)) {
+      BOOST_CHECK(dnsdist_ffi_ring_entry_get_backend(list, idx) == backend.toStringWithPort());
+      BOOST_CHECK_EQUAL(dnsdist_ffi_ring_entry_get_latency(list, idx), responseTime);
+    }
     BOOST_CHECK(!dnsdist_ffi_ring_entry_has_mac_address(list, idx));
     BOOST_CHECK(dnsdist_ffi_ring_entry_get_mac_address(list, idx) == std::string());
   }
@@ -744,7 +823,7 @@ BOOST_AUTO_TEST_CASE(test_RingBuffers)
   dnsdist_ffi_ring_entry_list_free(list);
   list = nullptr;
 
-  // no the right requestor
+  // not the right requestor
   BOOST_REQUIRE_EQUAL(dnsdist_ffi_ring_get_entries_by_addr("192.0.2.2", &list), 0U);
   BOOST_CHECK(list == nullptr);
 
@@ -778,6 +857,93 @@ BOOST_AUTO_TEST_CASE(test_NetworkEndpoint)
   {
     dnsdist_ffi_network_endpoint_free(nullptr);
   }
+}
+
+BOOST_AUTO_TEST_CASE(test_hash)
+{
+  const uint32_t seed = 0x42;
+  const std::array<unsigned char, 10> data{{'0', 'x', 'd', 'e', 'a', 'd', 'b', 'E', 'e', 'F'}};
+  const std::array<unsigned char, 10> capitalizedData{{'0', 'X', 'D', 'E', 'A', 'D', 'B', 'E', 'E', 'F'}};
+
+  {
+    /* invalid */
+    BOOST_CHECK_EQUAL(dnsdist_ffi_hash(0, nullptr, 0, false), 0U);
+    BOOST_CHECK_EQUAL(dnsdist_ffi_hash(seed, nullptr, 0, false), seed);
+  }
+  {
+    /* case sensitive */
+    auto hash = dnsdist_ffi_hash(seed, data.data(), data.size(), false);
+    BOOST_CHECK_EQUAL(hash, burtle(data.data(), data.size(), seed));
+    BOOST_CHECK_NE(hash, burtle(capitalizedData.data(), capitalizedData.size(), seed));
+    BOOST_CHECK_NE(hash, burtleCI(capitalizedData.data(), capitalizedData.size(), seed));
+  }
+  {
+    /* case insensitive */
+    auto hash = dnsdist_ffi_hash(seed, data.data(), data.size(), true);
+    BOOST_CHECK_EQUAL(hash, burtleCI(data.data(), data.size(), seed));
+    BOOST_CHECK_NE(hash, burtle(capitalizedData.data(), capitalizedData.size(), seed));
+    BOOST_CHECK_EQUAL(hash, burtleCI(capitalizedData.data(), capitalizedData.size(), seed));
+  }
+}
+
+BOOST_AUTO_TEST_CASE(test_SVC_Generation)
+{
+  dnsdist_ffi_svc_record_parameters* parameters{nullptr};
+
+  {
+    /* invalid parameters */
+    BOOST_CHECK_EQUAL(dnsdist_ffi_svc_record_parameters_new(nullptr, 0, false, &parameters), false);
+    BOOST_CHECK_EQUAL(dnsdist_ffi_svc_record_parameters_new("powerdns.com.", 0, false, nullptr), false);
+  }
+
+  BOOST_REQUIRE_EQUAL(dnsdist_ffi_svc_record_parameters_new("powerdns.com.", 1, true, &parameters), true);
+  BOOST_REQUIRE(parameters != nullptr);
+
+  {
+    /* invalid parameters */
+    dnsdist_ffi_svc_record_parameters_set_port(nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_set_ech(nullptr, "alpn", 4);
+    dnsdist_ffi_svc_record_parameters_set_additional_param(nullptr, 7, "/dns-query{?dns}", 16);
+    dnsdist_ffi_svc_record_parameters_set_additional_param(parameters, 7, nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_mandatory_param(nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_alpn(nullptr, "h2", 2);
+    dnsdist_ffi_svc_record_parameters_add_alpn(parameters, nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_ipv4_hint(parameters, nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_ipv4_hint(nullptr, nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_ipv6_hint(parameters, nullptr, 0);
+    dnsdist_ffi_svc_record_parameters_add_ipv6_hint(nullptr, nullptr, 0);
+    dnsdist_ffi_dnsquestion_generate_svc_response(nullptr, nullptr, 0, 0);
+  }
+
+  dnsdist_ffi_svc_record_parameters_set_port(parameters, 443);
+  dnsdist_ffi_svc_record_parameters_set_ech(parameters, "binary", 6);
+  dnsdist_ffi_svc_record_parameters_set_additional_param(parameters, 7, "/dns-query{?dns}", 16);
+  dnsdist_ffi_svc_record_parameters_add_mandatory_param(parameters, 7);
+  dnsdist_ffi_svc_record_parameters_add_alpn(parameters, "h2", 2);
+  dnsdist_ffi_svc_record_parameters_add_ipv4_hint(parameters, "9.9.9.9", 8);
+  dnsdist_ffi_svc_record_parameters_add_ipv6_hint(parameters, "2620:fe::fe", 11);
+
+  {
+    InternalQueryState ids;
+    ids.origRemote = ComboAddress("192.0.2.1:4242");
+    ids.origDest = ComboAddress("192.0.2.255:53");
+    ids.qtype = QType::A;
+    ids.qclass = QClass::IN;
+    ids.protocol = dnsdist::Protocol::DoUDP;
+    ids.qname = DNSName("www.powerdns.com.");
+    ids.queryRealTime.start();
+    PacketBuffer query;
+    GenericDNSPacketWriter<PacketBuffer> pwQ(query, ids.qname, QType::A, QClass::IN, 0);
+    pwQ.getHeader()->rd = 1;
+    pwQ.getHeader()->id = htons(42);
+
+    DNSQuestion dnsQuestion(ids, query);
+    dnsdist_ffi_dnsquestion_t lightDQ(&dnsQuestion);
+    std::array<const dnsdist_ffi_svc_record_parameters*, 1> list = {parameters};
+    BOOST_CHECK_EQUAL(dnsdist_ffi_dnsquestion_generate_svc_response(&lightDQ, list.data(), list.size(), 42), true);
+  }
+
+  dnsdist_ffi_svc_record_parameters_free(parameters);
 }
 
 BOOST_AUTO_TEST_SUITE_END();

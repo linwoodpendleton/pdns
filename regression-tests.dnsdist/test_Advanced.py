@@ -311,6 +311,7 @@ class TestAdvancedGetLocalAddressOnAnyBind(DNSDistTest):
     _config_params = ['_testServerPort', '_dnsDistPort', '_dnsDistPort']
     _acl = ['127.0.0.1/32', '::1/128']
     _skipListeningOnCL = True
+    _verboseMode = True
 
     def testAdvancedGetLocalAddressOnAnyBind(self):
         """
@@ -343,13 +344,13 @@ class TestAdvancedGetLocalAddressOnAnyBind(DNSDistTest):
                                     'address-was-127-0-0-2.local-address-any.advanced.tests.powerdns.com.')
         response.answer.append(rrset)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
+        sock.settimeout(2.0)
         sock.connect(('127.0.0.2', self._dnsDistPort))
         try:
             query = query.to_wire()
             sock.send(query)
             (data, remote) = sock.recvfrom(4096)
-            self.assertEquals(remote[0], '127.0.0.2')
+            self.assertEqual(remote[0], '127.0.0.2')
         except socket.timeout:
             data = None
 
@@ -376,14 +377,14 @@ class TestAdvancedGetLocalAddressOnAnyBind(DNSDistTest):
 
         # a bit more tricky, UDP-only IPv4
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
+        sock.settimeout(2.0)
         sock.connect(('127.0.0.2', self._dnsDistPort))
         self._toResponderQueue.put(response, True, 1.0)
         try:
             data = query.to_wire()
             sock.send(data)
             (data, remote) = sock.recvfrom(4096)
-            self.assertEquals(remote[0], '127.0.0.2')
+            self.assertEqual(remote[0], '127.0.0.2')
         except socket.timeout:
             data = None
 
@@ -399,14 +400,14 @@ class TestAdvancedGetLocalAddressOnAnyBind(DNSDistTest):
 
         # a bit more tricky, UDP-only IPv6
         sock = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
+        sock.settimeout(2.0)
         sock.connect(('::1', self._dnsDistPort))
         self._toResponderQueue.put(response, True, 1.0)
         try:
             data = query.to_wire()
             sock.send(data)
             (data, remote) = sock.recvfrom(4096)
-            self.assertEquals(remote[0], '::1')
+            self.assertEqual(remote[0], '::1')
         except socket.timeout:
             data = None
 
@@ -447,14 +448,14 @@ class TestAdvancedGetLocalAddressOnNonDefaultLoopbackBind(DNSDistTest):
 
         # a bit more tricky, UDP-only IPv4
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.settimeout(1.0)
+        sock.settimeout(2.0)
         sock.connect(('127.0.1.19', self._dnsDistPort))
         self._toResponderQueue.put(response, True, 1.0)
         try:
             data = query.to_wire()
             sock.send(data)
             (data, remote) = sock.recvfrom(4096)
-            self.assertEquals(remote[0], '127.0.1.19')
+            self.assertEqual(remote[0], '127.0.1.19')
         except socket.timeout:
             data = None
 
@@ -866,3 +867,46 @@ class TestFlagsOnTimeout(DNSDistTest):
 
         self.assertEqual(len(timeouts), 2)
         self.assertEqual(len(queries), 2)
+
+class TestTruncatedUDPLargeAnswers(DNSDistTest):
+    _config_template = """
+    newServer{address="127.0.0.1:%d"}
+    """
+    def testVeryLargeAnswer(self):
+        """
+        Advanced: Check that UDP responses that are too large for our buffer are dismissed
+        """
+        name = 'very-large-answer-dismissed.advanced.tests.powerdns.com.'
+        query = dns.message.make_query(name, 'TXT', 'IN')
+        response = dns.message.make_response(query)
+        # we prepare a large answer
+        content = ''
+        for i in range(31):
+            if len(content) > 0:
+                content = content + ' '
+            content = content + 'A' * 255
+        # pad up to 8192
+        content = content + ' ' + 'B' * 170
+
+        rrset = dns.rrset.from_text(name,
+                                    3600,
+                                    dns.rdataclass.IN,
+                                    dns.rdatatype.TXT,
+                                    content)
+        response.answer.append(rrset)
+        self.assertEqual(len(response.to_wire()), 8192)
+
+        # TCP should be OK
+        (receivedQuery, receivedResponse) = self.sendTCPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertTrue(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)
+        self.assertEqual(receivedResponse, response)
+
+        # UDP should  never get an answer, because dnsdist will not be able to get it from the backend
+        (receivedQuery, receivedResponse) = self.sendUDPQuery(query, response)
+        self.assertTrue(receivedQuery)
+        self.assertFalse(receivedResponse)
+        receivedQuery.id = query.id
+        self.assertEqual(query, receivedQuery)

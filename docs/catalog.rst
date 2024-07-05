@@ -1,4 +1,4 @@
-Catalog Zones (RFC  TBD)
+Catalog Zones (RFC 9432)
 ========================
 
 Starting with the PowerDNS Authoritative Server 4.7.0, catalog zone support is available.
@@ -11,7 +11,7 @@ Supported catalog versions
 +=================+==========+==========+
 | 1 (ISC)         | No       | Yes      |
 +-----------------+----------+----------+
-| 2 (RFC TBD)     | Yes      | Yes      |
+| 2 (:rfc:`9432`) | Yes      | Yes      |
 +-----------------+----------+----------+
 
 All the important features of catalog zones version "2" are supported.
@@ -54,7 +54,7 @@ Setting up catalog zones
 ------------------------
 
 .. note::
-  Catalog zone specification and operation is described in `DNS Catalog Zones <https://datatracker.ietf.org/doc/draft-ietf-dnsop-dns-catalog-zones/>`__.
+  Catalog zone specification and operation is described in :rfc:`9432`.
 
 Setting up a producer zone
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -103,8 +103,9 @@ In the example below ``example.com`` is the member and ``catalog.example`` is th
   pdnsutil set-catalog example.com catalog.example
 
 Setting catalog values is supported in the :doc:`API <http-api/zone>`, by setting the ``catalog`` property in the zone properties.
+Setting the catalog to an empty ``""`` removes the member zone from the catalog it is in.
 
-Each member zone may have one or more additional properties as defined in the draft.
+Each member zone may have one or more additional properties as defined in the RFC.
 PowerDNS currently supports the following properties:
 
 - coo - A single DNSName

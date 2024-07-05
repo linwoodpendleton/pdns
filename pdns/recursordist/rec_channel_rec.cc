@@ -28,6 +28,7 @@
 #include "rec-lua-conf.hh"
 
 #include "aggressive_nsec.hh"
+#include "coverage.hh"
 #include "validate-recursor.hh"
 #include "filterpo.hh"
 
@@ -37,6 +38,25 @@
 #include "rec-taskqueue.hh"
 #include "rec-tcpout.hh"
 #include "rec-main.hh"
+#include "rec-system-resolve.hh"
+
+#include "settings/cxxsettings.hh"
+
+/* g++ defines __SANITIZE_THREAD__
+   clang++ supports the nice __has_feature(thread_sanitizer),
+   let's merge them */
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define __SANITIZE_THREAD__ 1
+#endif
+#if __has_feature(address_sanitizer)
+#define __SANITIZE_ADDRESS__ 1
+#endif
+#endif
+
+#if defined(__SANITIZE_ADDRESS__) && defined(HAVE_LEAK_SANITIZER_INTERFACE)
+#include <sanitizer/lsan_interface.h>
+#endif
 
 std::pair<std::string, std::string> PrefixDashNumberCompare::prefixAndTrailingNum(const std::string& a)
 {
@@ -149,7 +169,7 @@ std::atomic<unsigned long>* getDynMetric(const std::string& str, const std::stri
     name = getPrometheusName(name);
   }
 
-  auto ret = dynmetrics{new std::atomic<unsigned long>(), name};
+  auto ret = dynmetrics{new std::atomic<unsigned long>(), std::move(name)};
   (*dm)[str] = ret;
   return ret.d_ptr;
 }
@@ -323,15 +343,15 @@ static uint64_t dumpAggressiveNSECCache(int fd)
   if (newfd == -1) {
     return 0;
   }
-  auto fp = std::unique_ptr<FILE, int (*)(FILE*)>(fdopen(newfd, "w"), fclose);
-  if (!fp) {
+  auto filePtr = pdns::UniqueFilePtr(fdopen(newfd, "w"));
+  if (!filePtr) {
     return 0;
   }
-  fprintf(fp.get(), "; aggressive NSEC cache dump follows\n;\n");
+  fprintf(filePtr.get(), "; aggressive NSEC cache dump follows\n;\n");
 
   struct timeval now;
   Utility::gettimeofday(&now, nullptr);
-  return g_aggressiveNSECCache->dumpToFile(fp, now);
+  return g_aggressiveNSECCache->dumpToFile(filePtr, now);
 }
 
 static uint64_t* pleaseDumpEDNSMap(int fd)
@@ -401,19 +421,52 @@ static RecursorControlChannel::Answer doDumpToFile(int s, uint64_t* (*function)(
 }
 
 // Does not follow the generic dump to file pattern, has a more complex lambda
-static RecursorControlChannel::Answer doDumpCache(int socket)
+template <typename T>
+static RecursorControlChannel::Answer doDumpCache(int socket, T begin, T end)
 {
   auto fdw = getfd(socket);
 
   if (fdw < 0) {
     return {1, "Error opening dump file for writing: " + stringerror() + "\n"};
   }
+  bool dumpRecordCache = true;
+  bool dumpNegCache = true;
+  bool dumpPacketCache = true;
+  bool dumpAggrCache = true;
+  if (begin != end) {
+    dumpRecordCache = false;
+    dumpNegCache = false;
+    dumpPacketCache = false;
+    dumpAggrCache = false;
+    for (auto name = begin; name != end; ++name) {
+      if (*name == "r") {
+        dumpRecordCache = true;
+      }
+      else if (*name == "n") {
+        dumpNegCache = true;
+      }
+      else if (*name == "p") {
+        dumpPacketCache = true;
+      }
+      else if (*name == "a") {
+        dumpAggrCache = true;
+      }
+    }
+  }
   uint64_t total = 0;
   try {
-    total += g_recCache->doDump(fdw, g_maxCacheEntries.load());
-    total += g_negCache->doDump(fdw, g_maxCacheEntries.load() / 8);
-    total += g_packetCache ? g_packetCache->doDump(fdw) : 0;
-    total += dumpAggressiveNSECCache(fdw);
+    if (dumpRecordCache) {
+      total += g_recCache->doDump(fdw, g_maxCacheEntries.load());
+    }
+    if (dumpNegCache) {
+      total += g_negCache->doDump(fdw, g_maxCacheEntries.load() / 8);
+    }
+    if (dumpPacketCache) {
+      total += g_packetCache ? g_packetCache->doDump(fdw) : 0;
+    }
+    if (dumpAggrCache) {
+      total += dumpAggressiveNSECCache(fdw);
+    }
   }
   catch (...) {
   }
@@ -444,13 +497,13 @@ static RecursorControlChannel::Answer doDumpRPZ(int s, T begin, T end)
     return {1, "No RPZ zone named " + zoneName + "\n"};
   }
 
-  auto fp = std::unique_ptr<FILE, int (*)(FILE*)>(fdopen(fdw, "w"), fclose);
-  if (!fp) {
+  auto filePtr = pdns::UniqueFilePtr(fdopen(fdw, "w"));
+  if (!filePtr) {
     int err = errno;
     return {1, "converting file descriptor: " + stringerror(err) + "\n"};
   }
 
-  zone->dump(fp.get());
+  zone->dump(filePtr.get());
 
   return {0, "done\n"};
 }
@@ -852,6 +905,25 @@ static string setMaxPacketCacheEntries(T begin, T end)
   }
 }
 
+template <typename T>
+static RecursorControlChannel::Answer setAggrNSECCacheSize(T begin, T end)
+{
+  if (end - begin != 1) {
+    return {1, "Need to supply new aggressive NSEC cache size\n"};
+  }
+  if (!g_aggressiveNSECCache) {
+    return {1, "Aggressive NSEC cache is disabled by startup config\n"};
+  }
+  try {
+    auto newmax = pdns::checked_stoi<uint64_t>(*begin);
+    g_aggressiveNSECCache->setMaxEntries(newmax);
+    return {0, "New aggressive NSEC cache size: " + std::to_string(newmax) + "\n"};
+  }
+  catch (const std::exception& e) {
+    return {1, "Error parsing the new aggressive NSEC cache size: " + std::string(e.what()) + "\n"};
+  }
+}
+
 static uint64_t getSysTimeMsec()
 {
   struct rusage ru;
@@ -913,7 +985,7 @@ static ProxyMappingStats_t* pleaseGetProxyMappingStats()
   auto ret = new ProxyMappingStats_t;
   if (t_proxyMapping) {
     for (const auto& [key, entry] : *t_proxyMapping) {
-      ret->emplace(std::make_pair(key, ProxyMappingCounts{entry.stats.netmaskMatches, entry.stats.suffixMatches}));
+      ret->emplace(key, ProxyMappingCounts{entry.stats.netmaskMatches, entry.stats.suffixMatches});
     }
   }
   return ret;
@@ -925,7 +997,7 @@ static RemoteLoggerStats_t* pleaseGetRemoteLoggerStats()
 
   if (t_protobufServers.servers) {
     for (const auto& server : *t_protobufServers.servers) {
-      ret->emplace(std::make_pair(server->address(), server->getStats()));
+      ret->emplace(server->address(), server->getStats());
     }
   }
   return ret.release();
@@ -948,7 +1020,7 @@ static RemoteLoggerStats_t* pleaseGetOutgoingRemoteLoggerStats()
 
   if (t_outgoingProtobufServers.servers) {
     for (const auto& server : *t_outgoingProtobufServers.servers) {
-      ret->emplace(std::make_pair(server->address(), server->getStats()));
+      ret->emplace(server->address(), server->getStats());
     }
   }
   return ret.release();
@@ -961,7 +1033,7 @@ static RemoteLoggerStats_t* pleaseGetFramestreamLoggerStats()
 
   if (t_frameStreamServersInfo.servers) {
     for (const auto& server : *t_frameStreamServersInfo.servers) {
-      ret->emplace(std::make_pair(server->address(), server->getStats()));
+      ret->emplace(server->address(), server->getStats());
     }
   }
   return ret.release();
@@ -973,7 +1045,7 @@ static RemoteLoggerStats_t* pleaseGetNODFramestreamLoggerStats()
 
   if (t_nodFrameStreamServersInfo.servers) {
     for (const auto& server : *t_nodFrameStreamServersInfo.servers) {
-      ret->emplace(std::make_pair(server->address(), server->getStats()));
+      ret->emplace(server->address(), server->getStats());
     }
   }
   return ret.release();
@@ -1014,13 +1086,13 @@ static string* pleaseGetCurrentQueries()
   struct timeval now;
   gettimeofday(&now, 0);
 
-  ostr << getMT()->d_waiters.size() << " currently outstanding questions\n";
+  ostr << getMT()->getWaiters().size() << " currently outstanding questions\n";
 
   boost::format fmt("%1% %|40t|%2% %|47t|%3% %|63t|%4% %|68t|%5% %|78t|%6%\n");
 
   ostr << (fmt % "qname" % "qtype" % "remote" % "tcp" % "chained" % "spent(ms)");
   unsigned int n = 0;
-  for (const auto& mthread : getMT()->d_waiters) {
+  for (const auto& mthread : getMT()->getWaiters()) {
     const std::shared_ptr<PacketID>& pident = mthread.key;
     const double spent = g_networkTimeoutMsec - (DiffTime(now, mthread.ttd) * 1000);
     ostr << (fmt
@@ -1064,16 +1136,6 @@ static uint64_t doGetCacheSize()
 static uint64_t doGetCacheBytes()
 {
   return g_recCache->bytes();
-}
-
-static uint64_t doGetCacheHits()
-{
-  return g_recCache->cacheHits;
-}
-
-static uint64_t doGetCacheMisses()
-{
-  return g_recCache->cacheMisses;
 }
 
 static uint64_t doGetMallocated()
@@ -1154,9 +1216,9 @@ static StatsMap toCPUStatsMap(const string& name)
 {
   const string pbasename = getPrometheusName(name);
   StatsMap entries;
-  // Only distr and worker threads, I think we should revisit this as we now not only have the handler thread but also
-  // taskThread(s).
-  for (unsigned int n = 0; n < RecThreadInfo::numDistributors() + RecThreadInfo::numWorkers(); ++n) {
+
+  // Handler is not reported
+  for (unsigned int n = 0; n < RecThreadInfo::numRecursorThreads() - 1; ++n) {
     uint64_t tm = doGetThreadCPUMsec(n);
     std::string pname = pbasename + "{thread=\"" + std::to_string(n) + "\"}";
     entries.emplace(name + "-thread-" + std::to_string(n), StatsMapEntry{std::move(pname), std::to_string(tm)});
@@ -1182,7 +1244,7 @@ static StatsMap toRPZStatsMap(const string& name, const std::unordered_map<std::
       sname = name + "-rpz-" + key;
       pname = pbasename + "{type=\"rpz\",policyname=\"" + key + "\"}";
     }
-    entries.emplace(sname, StatsMapEntry{pname, std::to_string(count)});
+    entries.emplace(sname, StatsMapEntry{std::move(pname), std::to_string(count)});
     total += count;
   }
   entries.emplace(name, StatsMapEntry{pbasename, std::to_string(total)});
@@ -1255,8 +1317,8 @@ static void registerAllStats1()
   addGetStat("ipv6-questions", [] { return g_Counters.sum(rec::Counter::ipv6qcounter); });
   addGetStat("tcp-questions", [] { return g_Counters.sum(rec::Counter::tcpqcounter); });
 
-  addGetStat("cache-hits", doGetCacheHits);
-  addGetStat("cache-misses", doGetCacheMisses);
+  addGetStat("cache-hits", []() { return g_recCache->getCacheHits(); });
+  addGetStat("cache-misses", []() { return g_recCache->getCacheMisses(); });
   addGetStat("cache-entries", doGetCacheSize);
   addGetStat("max-cache-entries", []() { return g_maxCacheEntries.load(); });
   addGetStat("max-packetcache-entries", []() { return g_maxPacketCacheEntries.load(); });
@@ -1504,6 +1566,9 @@ static void registerAllStats1()
   addGetStat("nod-events", [] { return g_Counters.sum(rec::Counter::nodCount); });
   addGetStat("udr-events", [] { return g_Counters.sum(rec::Counter::udrCount); });
 
+  addGetStat("max-chain-length", [] { return g_Counters.max(rec::Counter::maxChainLength); });
+  addGetStat("max-chain-weight", [] { return g_Counters.max(rec::Counter::maxChainWeight); });
+
   /* make sure that the ECS stats are properly initialized */
   SyncRes::clearECSStats();
   for (size_t idx = 0; idx < SyncRes::s_ecsResponsesBySubnetSize4.size(); idx++) {
@@ -1546,18 +1611,38 @@ void registerAllStats()
   }
 }
 
+static auto clearLuaScript()
+{
+  vector<string> empty;
+  empty.emplace_back();
+  return doQueueReloadLuaScript(empty.begin(), empty.end());
+}
+
 void doExitGeneric(bool nicely)
 {
+#if defined(__SANITIZE_THREAD__)
+  _exit(0); // regression test check for exit 0
+#endif
   g_log << Logger::Error << "Exiting on user request" << endl;
   g_rcc.~RecursorControlChannel();
 
-  if (!g_pidfname.empty())
+  if (!g_pidfname.empty()) {
     unlink(g_pidfname.c_str()); // we can at least try..
+  }
+
   if (nicely) {
     RecursorControlChannel::stop = true;
   }
   else {
-    _exit(1);
+#if defined(__SANITIZE_ADDRESS__) && defined(HAVE_LEAK_SANITIZER_INTERFACE)
+    clearLuaScript();
+    pdns::coverage::dumpCoverageData();
+    __lsan_do_leak_check();
+    _exit(0); // let the regression test distinguish between leaks and no leaks as __lsan_do_leak_check() exits 1 on leaks
+#else
+    pdns::coverage::dumpCoverageData();
+    _exit(1); // for historic reasons we exit 1
+#endif
   }
 }
 
@@ -2056,12 +2141,14 @@ static RecursorControlChannel::Answer help()
           "reload-lua-config [filename]     (re)load Lua configuration file\n"
           "reload-zones                     reload all auth and forward zones\n"
           "set-ecs-minimum-ttl value        set ecs-minimum-ttl-override\n"
-          "set-max-cache-entries value      set new maximum cache size\n"
+          "set-max-aggr-nsec-cache-size value set new maximum aggressive NSEC cache size\n"
+          "set-max-cache-entries value      set new maximum record cache size\n"
           "set-max-packetcache-entries val  set new maximum packet cache size\n"
           "set-minimum-ttl value            set minimum-ttl-override\n"
           "set-carbon-server                set a carbon server for telemetry\n"
           "set-dnssec-log-bogus SETTING     enable (SETTING=yes) or disable (SETTING=no) logging of DNSSEC validation failures\n"
           "set-event-trace-enabled SETTING  set logging of event trace messages, 0 = disabled, 1 = protobuf, 2 = log file, 3 = both\n"
+          "show-yaml [file]                 show yaml config derived from old-style config\n"
           "trace-regex [regex file]         emit resolution trace for matching queries (no arguments clears tracing)\n"
           "top-largeanswer-remotes          show top remotes receiving large answers\n"
           "top-queries                      show top queries\n"
@@ -2080,27 +2167,84 @@ static RecursorControlChannel::Answer help()
           "wipe-cache-typed type domain0 [domain1] ..  wipe domain data with qtype from cache\n"};
 }
 
+RecursorControlChannel::Answer luaconfig(bool broadcast)
+{
+  ProxyMapping proxyMapping;
+  LuaConfigItems lci;
+  lci.d_slog = g_slog;
+  extern std::unique_ptr<ProxyMapping> g_proxyMapping;
+  if (!g_luaSettingsInYAML) {
+    try {
+      loadRecursorLuaConfig(::arg()["lua-config-file"], proxyMapping, lci);
+      activateLuaConfig(lci);
+      lci = g_luaconfs.getCopy();
+      if (broadcast) {
+        startLuaConfigDelayedThreads(lci.rpzs, lci.generation);
+        broadcastFunction([=] { return pleaseSupplantProxyMapping(proxyMapping); });
+      }
+      else {
+        // Initial proxy mapping
+        g_proxyMapping = proxyMapping.empty() ? nullptr : std::make_unique<ProxyMapping>(proxyMapping);
+      }
+      if (broadcast) {
+        SLOG(g_log << Logger::Notice << "Reloaded Lua configuration file '" << ::arg()["lua-config-file"] << "', requested via control channel" << endl,
+             g_slog->withName("config")->info(Logr::Info, "Reloaded"));
+      }
+      return {0, "Reloaded Lua configuration file '" + ::arg()["lua-config-file"] + "'\n"};
+    }
+    catch (std::exception& e) {
+      return {1, "Unable to load Lua script from '" + ::arg()["lua-config-file"] + "': " + e.what() + "\n"};
+    }
+    catch (const PDNSException& e) {
+      return {1, "Unable to load Lua script from '" + ::arg()["lua-config-file"] + "': " + e.reason + "\n"};
+    }
+  }
+  try {
+    string configname = ::arg()["config-dir"] + "/recursor";
+    if (!::arg()["config-name"].empty()) {
+      configname = ::arg()["config-dir"] + "/recursor-" + ::arg()["config-name"];
+    }
+    bool dummy1{};
+    bool dummy2{};
+    pdns::rust::settings::rec::Recursorsettings settings;
+    auto yamlstat = pdns::settings::rec::tryReadYAML(configname + g_yamlSettingsSuffix, false, dummy1, dummy2, settings, g_slog);
+    if (yamlstat != pdns::settings::rec::YamlSettingsStatus::OK) {
+      return {1, "Not reloading dynamic part of YAML configuration\n"};
+    }
+    auto generation = g_luaconfs.getLocal()->generation;
+    lci.generation = generation + 1;
+    pdns::settings::rec::fromBridgeStructToLuaConfig(settings, lci, proxyMapping);
+    activateLuaConfig(lci);
+    lci = g_luaconfs.getCopy();
+    if (broadcast) {
+      startLuaConfigDelayedThreads(lci.rpzs, lci.generation);
+      broadcastFunction([pmap = std::move(proxyMapping)] { return pleaseSupplantProxyMapping(pmap); });
+    }
+    else {
+      // Initial proxy mapping
+      g_proxyMapping = proxyMapping.empty() ? nullptr : std::make_unique<ProxyMapping>(proxyMapping);
+    }
+
+    return {0, "Reloaded dynamic part of YAML configuration\n"};
+  }
+  catch (std::exception& e) {
+    return {1, "Unable to reload dynamic YAML changes: " + std::string(e.what()) + "\n"};
+  }
+  catch (const PDNSException& e) {
+    return {1, "Unable to reload dynamic YAML changes: " + e.reason + "\n"};
+  }
+}
+
 template <typename T>
 static RecursorControlChannel::Answer luaconfig(T begin, T end)
 {
   if (begin != end) {
+    if (g_luaSettingsInYAML) {
+      return {1, "Unable to reload Lua script from '" + ::arg()["lua-config-file"] + " as there is no active Lua configuration\n"};
+    }
     ::arg().set("lua-config-file") = *begin;
   }
-  try {
-    luaConfigDelayedThreads delayedLuaThreads;
-    ProxyMapping proxyMapping;
-    loadRecursorLuaConfig(::arg()["lua-config-file"], delayedLuaThreads, proxyMapping);
-    startLuaConfigDelayedThreads(delayedLuaThreads, g_luaconfs.getCopy().generation);
-    broadcastFunction([=] { return pleaseSupplantProxyMapping(proxyMapping); });
-    g_log << Logger::Warning << "Reloaded Lua configuration file '" << ::arg()["lua-config-file"] << "', requested via control channel" << endl;
-    return {0, "Reloaded Lua configuration file '" + ::arg()["lua-config-file"] + "'\n"};
-  }
-  catch (std::exception& e) {
-    return {1, "Unable to load Lua script from '" + ::arg()["lua-config-file"] + "': " + e.what() + "\n"};
-  }
-  catch (const PDNSException& e) {
-    return {1, "Unable to load Lua script from '" + ::arg()["lua-config-file"] + "': " + e.reason + "\n"};
-  }
+  return luaconfig(true);
 }
 
 static RecursorControlChannel::Answer reloadACLs()
@@ -2122,6 +2266,16 @@ static RecursorControlChannel::Answer reloadACLs()
     return {1, ae.reason + string("\n")};
   }
   return {0, "ok\n"};
+}
+
+static std::string reloadZoneConfigurationWithSysResolveReset()
+{
+  auto& sysResolver = pdns::RecResolve::getInstance();
+  sysResolver.stopRefresher();
+  sysResolver.wipe();
+  auto ret = reloadZoneConfiguration(g_yamlSettings);
+  sysResolver.startRefresher();
+  return ret;
 }
 
 RecursorControlChannel::Answer RecursorControlParser::getAnswer(int socket, const string& question, RecursorControlParser::func_t** command)
@@ -2163,7 +2317,7 @@ RecursorControlChannel::Answer RecursorControlParser::getAnswer(int socket, cons
     return {0, "bye nicely\n"};
   }
   if (cmd == "dump-cache") {
-    return doDumpCache(socket);
+    return doDumpCache(socket, begin, end);
   }
   if (cmd == "dump-dot-probe-map") {
     return doDumpToFile(socket, pleaseDumpDoTProbeMap, cmd, false);
@@ -2216,9 +2370,7 @@ RecursorControlChannel::Answer RecursorControlParser::getAnswer(int socket, cons
     return {0, doTraceRegex(begin == end ? FDWrapper(-1) : getfd(socket), begin, end)};
   }
   if (cmd == "unload-lua-script") {
-    vector<string> empty;
-    empty.emplace_back();
-    return doQueueReloadLuaScript(empty.begin(), empty.end());
+    return clearLuaScript();
   }
   if (cmd == "reload-acls") {
     return reloadACLs();
@@ -2267,7 +2419,7 @@ RecursorControlChannel::Answer RecursorControlParser::getAnswer(int socket, cons
       g_log << Logger::Error << "Unable to reload zones and forwards when chroot()'ed, requested via control channel" << endl;
       return {1, "Unable to reload zones and forwards when chroot()'ed, please restart\n"};
     }
-    return {0, reloadZoneConfiguration()};
+    return {0, reloadZoneConfigurationWithSysResolveReset()};
   }
   if (cmd == "set-ecs-minimum-ttl") {
     return {0, setMinimumECSTTL(begin, end)};
@@ -2334,6 +2486,9 @@ RecursorControlChannel::Answer RecursorControlParser::getAnswer(int socket, cons
   }
   if (cmd == "list-dnssec-algos") {
     return {0, DNSCryptoKeyEngine::listSupportedAlgoNames()};
+  }
+  if (cmd == "set-aggr-nsec-cache-size") {
+    return setAggrNSECCacheSize(begin, end);
   }
 
   return {1, "Unknown command '" + cmd + "', try 'help'\n"};

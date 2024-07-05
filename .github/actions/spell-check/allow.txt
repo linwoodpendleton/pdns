@@ -240,6 +240,7 @@ batchmode
 baz
 bbnew
 bbold
+bbr
 bbsv
 bccaf
 bdr
@@ -427,7 +428,6 @@ checkrr
 checkzone
 chgrp
 childstat
-chkconfig
 chmod
 chown
 chr
@@ -830,6 +830,7 @@ dontdrop
 dontinclude
 dontqueries
 DONTWAIT
+DOQ
 doquery
 dosec
 dotests
@@ -1829,6 +1830,7 @@ localdata
 localname
 localsock
 localstatedir
+localwho
 loctext
 locwild
 logaction
@@ -2550,6 +2552,7 @@ pbegin
 pbf
 PBKDF
 PBpq
+pbr
 pbtag
 pcall
 PCDNSSEC
@@ -3147,6 +3150,7 @@ sched
 schemaversion
 scl
 sclo
+scm
 SCNu
 SCombo
 SConnect
@@ -3339,7 +3343,6 @@ sockname
 sockowner
 socktype
 sodbc
-sodcrypto
 sodiumsigners
 sokolov
 somedata
@@ -3552,7 +3555,7 @@ tcpavgqueriesperconnection
 tcpbench
 tcpbytesanswered
 tcpclient
-tcpclientimeouts
+tcpclienttimeouts
 tcpclientthreads
 tcpcurrentconnections
 tcpdiedreaddingresponse

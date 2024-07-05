@@ -39,6 +39,11 @@
 #include "secpoll-recursor.hh"
 #include "logging.hh"
 #include "dnsseckeeper.hh"
+#include "settings/cxxsettings.hh"
+#include "json.hh"
+#include "rec-system-resolve.hh"
+#include "root-dnssec.hh"
+#include "ratelimitedlog.hh"
 
 #ifdef NOD_ENABLED
 #include "nod.hh"
@@ -63,30 +68,48 @@ thread_local FrameStreamServersInfo t_frameStreamServersInfo;
 thread_local FrameStreamServersInfo t_nodFrameStreamServersInfo;
 #endif /* HAVE_FSTRM */
 
+/* g++ defines __SANITIZE_THREAD__
+   clang++ supports the nice __has_feature(thread_sanitizer),
+   let's merge them */
+#if defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define __SANITIZE_THREAD__ 1
+#endif
+#if __has_feature(address_sanitizer)
+#define __SANITIZE_ADDRESS__ 1
+#endif
+#endif
+
 string g_programname = "pdns_recursor";
 string g_pidfname;
 RecursorControlChannel g_rcc; // only active in the handler thread
 bool g_regressionTestMode;
+bool g_yamlSettings;
+string g_yamlSettingsSuffix;
+bool g_luaSettingsInYAML;
 
 #ifdef NOD_ENABLED
 bool g_nodEnabled;
 DNSName g_nodLookupDomain;
 bool g_nodLog;
 SuffixMatchNode g_nodDomainWL;
+SuffixMatchNode g_udrDomainWL;
 std::string g_nod_pbtag;
 bool g_udrEnabled;
 bool g_udrLog;
 std::string g_udr_pbtag;
-thread_local std::shared_ptr<nod::NODDB> t_nodDBp;
-thread_local std::shared_ptr<nod::UniqueResponseDB> t_udrDBp;
+std::unique_ptr<nod::NODDB> g_nodDBp;
+std::unique_ptr<nod::UniqueResponseDB> g_udrDBp;
 #endif /* NOD_ENABLED */
 
 std::atomic<bool> statsWanted;
 uint32_t g_disthashseed;
 bool g_useIncomingECS;
 NetmaskGroup g_proxyProtocolACL;
+std::set<ComboAddress> g_proxyProtocolExceptions;
 boost::optional<ComboAddress> g_dns64Prefix{boost::none};
 DNSName g_dns64PrefixReverse;
+unsigned int g_maxChainLength;
 std::shared_ptr<SyncRes::domainmap_t> g_initialDomainMap; // new threads needs this to be setup
 std::shared_ptr<NetmaskGroup> g_initialAllowFrom; // new thread needs to be setup with this
 std::shared_ptr<NetmaskGroup> g_initialAllowNotifyFrom; // new threads need this to be setup
@@ -104,7 +127,8 @@ std::shared_ptr<Logr::Logger> g_slogudpin;
 std::shared_ptr<Logr::Logger> g_slogudpout;
 
 /* without reuseport, all listeners share the same sockets */
-deferredAdd_t g_deferredAdds;
+static deferredAdd_t s_deferredUDPadds;
+static deferredAdd_t s_deferredTCPadds;
 
 /* first we have the handler thread, t_id == 0 (some other
    helper threads like SNMP might have t_id == 0 as well)
@@ -117,8 +141,11 @@ thread_local std::unique_ptr<ProxyMapping> t_proxyMapping;
 
 bool RecThreadInfo::s_weDistributeQueries; // if true, 1 or more threads listen on the incoming query sockets and distribute them to workers
 unsigned int RecThreadInfo::s_numDistributorThreads;
-unsigned int RecThreadInfo::s_numWorkerThreads;
+unsigned int RecThreadInfo::s_numUDPWorkerThreads;
+unsigned int RecThreadInfo::s_numTCPWorkerThreads;
 thread_local unsigned int RecThreadInfo::t_id;
+
+static pdns::RateLimitedLog s_rateLimitedLogger;
 
 static std::map<unsigned int, std::set<int>> parseCPUMap(Logr::log_t log)
 {
@@ -216,80 +243,110 @@ void RecThreadInfo::start(unsigned int tid, const string& tname, const std::map<
 int RecThreadInfo::runThreads(Logr::log_t log)
 {
   int ret = EXIT_SUCCESS;
-  unsigned int currentThreadId = 1;
   const auto cpusMap = parseCPUMap(log);
 
-  if (RecThreadInfo::numDistributors() + RecThreadInfo::numWorkers() == 1) {
-    SLOG(g_log << Logger::Warning << "Operating with single distributor/worker thread" << endl,
-         log->info(Logr::Notice, "Operating with single distributor/worker thread"));
+  if (RecThreadInfo::numDistributors() + RecThreadInfo::numUDPWorkers() == 1) {
+    SLOG(g_log << Logger::Warning << "Operating with single UDP distributor/worker thread" << endl,
+         log->info(Logr::Notice, "Operating with single UDP distributor/worker thread"));
 
     /* This thread handles the web server, carbon, statistics and the control channel */
-    auto& handlerInfo = RecThreadInfo::info(0);
+    unsigned int currentThreadId = 0;
+    auto& handlerInfo = RecThreadInfo::info(currentThreadId);
     handlerInfo.setHandler();
-    handlerInfo.start(0, "web+stat", cpusMap, log);
-    auto& taskInfo = RecThreadInfo::info(2);
-    taskInfo.setTaskThread();
-    taskInfo.start(2, "task", cpusMap, log);
+    handlerInfo.start(currentThreadId, "web+stat", cpusMap, log);
 
+    // We skip the single UDP worker thread 1, it's handled after the loop and taskthreads
+    currentThreadId = 2;
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTCPWorkers(); thread++, currentThreadId++) {
+      auto& info = RecThreadInfo::info(currentThreadId);
+      info.setTCPListener();
+      info.setWorker();
+      info.start(currentThreadId, "tcpworker", cpusMap, log);
+    }
+
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTaskThreads(); thread++, currentThreadId++) {
+      auto& taskInfo = RecThreadInfo::info(currentThreadId);
+      taskInfo.setTaskThread();
+      taskInfo.start(currentThreadId, "task", cpusMap, log);
+    }
+
+    currentThreadId = 1;
     auto& info = RecThreadInfo::info(currentThreadId);
     info.setListener();
     info.setWorker();
-    RecThreadInfo::setThreadId(currentThreadId++);
+    RecThreadInfo::setThreadId(currentThreadId);
     recursorThread();
 
-    handlerInfo.thread.join();
-    if (handlerInfo.exitCode != 0) {
-      ret = handlerInfo.exitCode;
-    }
-    taskInfo.thread.join();
-    if (taskInfo.exitCode != 0) {
-      ret = taskInfo.exitCode;
+    for (unsigned int thread = 0; thread < RecThreadInfo::numRecursorThreads(); thread++) {
+      if (thread == 1) {
+        continue;
+      }
+      auto& tInfo = RecThreadInfo::info(thread);
+      tInfo.thread.join();
+      if (tInfo.exitCode != 0) {
+        ret = tInfo.exitCode;
+      }
     }
   }
   else {
     // Setup RecThreadInfo objects
-    unsigned int tmp = currentThreadId;
+    unsigned int currentThreadId = 1;
     if (RecThreadInfo::weDistributeQueries()) {
-      for (unsigned int thread = 0; thread < RecThreadInfo::numDistributors(); ++thread) {
-        RecThreadInfo::info(tmp++).setListener();
+      for (unsigned int thread = 0; thread < RecThreadInfo::numDistributors(); thread++, currentThreadId++) {
+        RecThreadInfo::info(currentThreadId).setListener();
       }
     }
-    for (unsigned int thread = 0; thread < RecThreadInfo::numWorkers(); ++thread) {
-      auto& info = RecThreadInfo::info(tmp++);
+    for (unsigned int thread = 0; thread < RecThreadInfo::numUDPWorkers(); thread++, currentThreadId++) {
+      auto& info = RecThreadInfo::info(currentThreadId);
       info.setListener(!RecThreadInfo::weDistributeQueries());
       info.setWorker();
     }
-    for (unsigned int thread = 0; thread < RecThreadInfo::numTaskThreads(); ++thread) {
-      auto& info = RecThreadInfo::info(tmp++);
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTCPWorkers(); thread++, currentThreadId++) {
+      auto& info = RecThreadInfo::info(currentThreadId);
+      info.setTCPListener();
+      info.setWorker();
+    }
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTaskThreads(); thread++, currentThreadId++) {
+      auto& info = RecThreadInfo::info(currentThreadId);
       info.setTaskThread();
     }
 
     // And now start the actual threads
+    currentThreadId = 1;
     if (RecThreadInfo::weDistributeQueries()) {
       SLOG(g_log << Logger::Warning << "Launching " << RecThreadInfo::numDistributors() << " distributor threads" << endl,
            log->info(Logr::Notice, "Launching distributor threads", "count", Logging::Loggable(RecThreadInfo::numDistributors())));
-      for (unsigned int thread = 0; thread < RecThreadInfo::numDistributors(); ++thread) {
+      for (unsigned int thread = 0; thread < RecThreadInfo::numDistributors(); thread++, currentThreadId++) {
         auto& info = RecThreadInfo::info(currentThreadId);
-        info.start(currentThreadId++, "distr", cpusMap, log);
+        info.start(currentThreadId, "distr", cpusMap, log);
       }
     }
-    SLOG(g_log << Logger::Warning << "Launching " << RecThreadInfo::numWorkers() << " worker threads" << endl,
-         log->info(Logr::Notice, "Launching worker threads", "count", Logging::Loggable(RecThreadInfo::numWorkers())));
+    SLOG(g_log << Logger::Warning << "Launching " << RecThreadInfo::numUDPWorkers() << " worker threads" << endl,
+         log->info(Logr::Notice, "Launching worker threads", "count", Logging::Loggable(RecThreadInfo::numUDPWorkers())));
 
-    for (unsigned int thread = 0; thread < RecThreadInfo::numWorkers(); ++thread) {
+    for (unsigned int thread = 0; thread < RecThreadInfo::numUDPWorkers(); thread++, currentThreadId++) {
       auto& info = RecThreadInfo::info(currentThreadId);
-      info.start(currentThreadId++, "worker", cpusMap, log);
+      info.start(currentThreadId, "worker", cpusMap, log);
     }
 
-    for (unsigned int thread = 0; thread < RecThreadInfo::numTaskThreads(); ++thread) {
+    SLOG(g_log << Logger::Warning << "Launching " << RecThreadInfo::numTCPWorkers() << " tcpworker threads" << endl,
+         log->info(Logr::Notice, "Launching tcpworker threads", "count", Logging::Loggable(RecThreadInfo::numTCPWorkers())));
+
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTCPWorkers(); thread++, currentThreadId++) {
       auto& info = RecThreadInfo::info(currentThreadId);
-      info.start(currentThreadId++, "task", cpusMap, log);
+      info.start(currentThreadId, "tcpworker", cpusMap, log);
+    }
+
+    for (unsigned int thread = 0; thread < RecThreadInfo::numTaskThreads(); thread++, currentThreadId++) {
+      auto& info = RecThreadInfo::info(currentThreadId);
+      info.start(currentThreadId, "task", cpusMap, log);
     }
 
     /* This thread handles the web server, carbon, statistics and the control channel */
-    auto& info = RecThreadInfo::info(0);
+    currentThreadId = 0;
+    auto& info = RecThreadInfo::info(currentThreadId);
     info.setHandler();
-    info.start(0, "web+stat", cpusMap, log);
+    info.start(currentThreadId, "web+stat", cpusMap, log);
 
     for (auto& tInfo : RecThreadInfo::infos()) {
       tInfo.thread.join();
@@ -493,6 +550,8 @@ void protobufLogQuery(LocalStateHolder<LuaConfigItems>& luaconfsLocal, const boo
   msg.setRequestorId(requestorId);
   msg.setDeviceId(deviceId);
   msg.setDeviceName(deviceName);
+  msg.setWorkerId(RecThreadInfo::id());
+  // For queries, packetCacheHit and outgoingQueries are not relevant
 
   if (!policyTags.empty()) {
     msg.addPolicyTags(policyTags);
@@ -549,14 +608,14 @@ void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaCon
   if (!luaconfsLocal->protobufExportConfig.logMappedFrom) {
     pbMessage.setSocketFamily(source.sin4.sin_family);
     Netmask requestorNM(source, source.sin4.sin_family == AF_INET ? luaconfsLocal->protobufMaskV4 : luaconfsLocal->protobufMaskV6);
-    auto requestor = requestorNM.getMaskedNetwork();
+    const auto& requestor = requestorNM.getMaskedNetwork();
     pbMessage.setFrom(requestor);
     pbMessage.setFromPort(source.getPort());
   }
   else {
     pbMessage.setSocketFamily(mappedSource.sin4.sin_family);
     Netmask requestorNM(mappedSource, mappedSource.sin4.sin_family == AF_INET ? luaconfsLocal->protobufMaskV4 : luaconfsLocal->protobufMaskV6);
-    auto requestor = requestorNM.getMaskedNetwork();
+    const auto& requestor = requestorNM.getMaskedNetwork();
     pbMessage.setFrom(requestor);
     pbMessage.setFromPort(mappedSource.getPort());
   }
@@ -571,6 +630,11 @@ void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaCon
   pbMessage.setDeviceId(deviceId);
   pbMessage.setDeviceName(deviceName);
   pbMessage.setToPort(destination.getPort());
+  pbMessage.setWorkerId(RecThreadInfo::id());
+  // this method is only used for PC cache hits
+  pbMessage.setPacketCacheHit(true);
+  // we do not set outgoingQueries, it is not relevant for PC cache hits
+
   for (const auto& metaItem : meta) {
     pbMessage.setMeta(metaItem.first, metaItem.second.stringVal, metaItem.second.intVal);
   }
@@ -748,50 +812,81 @@ static void setupNODThread(Logr::log_t log)
 {
   if (g_nodEnabled) {
     uint32_t num_cells = ::arg().asNum("new-domain-db-size");
-    t_nodDBp = std::make_shared<nod::NODDB>(num_cells);
+    g_nodDBp = std::make_unique<nod::NODDB>(num_cells);
     try {
-      t_nodDBp->setCacheDir(::arg()["new-domain-history-dir"]);
+      g_nodDBp->setCacheDir(::arg()["new-domain-history-dir"]);
     }
     catch (const PDNSException& e) {
       SLOG(g_log << Logger::Error << "new-domain-history-dir (" << ::arg()["new-domain-history-dir"] << ") is not readable or does not exist" << endl,
-           log->error(Logr::Error, e.reason, "new-domain-history-dir is not readbale or does not exists", "dir", Logging::Loggable(::arg()["new-domain-history-dir"])));
+           log->error(Logr::Error, e.reason, "new-domain-history-dir is not readable or does not exists", "dir", Logging::Loggable(::arg()["new-domain-history-dir"])));
       _exit(1);
     }
-    if (!t_nodDBp->init()) {
+    if (!g_nodDBp->init()) {
       SLOG(g_log << Logger::Error << "Could not initialize domain tracking" << endl,
            log->info(Logr::Error, "Could not initialize domain tracking"));
       _exit(1);
     }
-    std::thread thread(nod::NODDB::startHousekeepingThread, t_nodDBp, std::this_thread::get_id());
-    thread.detach();
+    if (::arg().asNum("new-domain-db-snapshot-interval") > 0) {
+      g_nodDBp->setSnapshotInterval(::arg().asNum("new-domain-db-snapshot-interval"));
+      std::thread thread([tid = std::this_thread::get_id()]() {
+        g_nodDBp->housekeepingThread(tid);
+      });
+      thread.detach();
+    }
   }
   if (g_udrEnabled) {
     uint32_t num_cells = ::arg().asNum("unique-response-db-size");
-    t_udrDBp = std::make_shared<nod::UniqueResponseDB>(num_cells);
+    g_udrDBp = std::make_unique<nod::UniqueResponseDB>(num_cells);
     try {
-      t_udrDBp->setCacheDir(::arg()["unique-response-history-dir"]);
+      g_udrDBp->setCacheDir(::arg()["unique-response-history-dir"]);
     }
     catch (const PDNSException& e) {
       SLOG(g_log << Logger::Error << "unique-response-history-dir (" << ::arg()["unique-response-history-dir"] << ") is not readable or does not exist" << endl,
            log->info(Logr::Error, "unique-response-history-dir is not readable or does not exist", "dir", Logging::Loggable(::arg()["unique-response-history-dir"])));
       _exit(1);
     }
-    if (!t_udrDBp->init()) {
+    if (!g_udrDBp->init()) {
       SLOG(g_log << Logger::Error << "Could not initialize unique response tracking" << endl,
            log->info(Logr::Error, "Could not initialize unique response tracking"));
       _exit(1);
     }
-    std::thread thread(nod::UniqueResponseDB::startHousekeepingThread, t_udrDBp, std::this_thread::get_id());
-    thread.detach();
+    if (::arg().asNum("new-domain-db-snapshot-interval") > 0) {
+      g_udrDBp->setSnapshotInterval(::arg().asNum("new-domain-db-snapshot-interval"));
+      std::thread thread([tid = std::this_thread::get_id()]() {
+        g_udrDBp->housekeepingThread(tid);
+      });
+      thread.detach();
+    }
   }
 }
 
-static void parseNODIgnorelist(const std::string& wlist)
+static void parseIgnorelist(const std::string& wlist, SuffixMatchNode& matchNode)
 {
   vector<string> parts;
   stringtok(parts, wlist, ",; ");
   for (const auto& part : parts) {
-    g_nodDomainWL.add(DNSName(part));
+    matchNode.add(DNSName(part));
+  }
+}
+
+static void parseIgnorelistFile(const std::string& fname, SuffixMatchNode& matchNode)
+{
+  string line;
+  std::ifstream ignorelistFileStream(fname);
+  if (!ignorelistFileStream) {
+    throw ArgException(fname + " could not be opened");
+  }
+
+  while (getline(ignorelistFileStream, line)) {
+    boost::trim(line);
+
+    try {
+      matchNode.add(DNSName(line));
+    }
+    catch (const std::exception& e) {
+      SLOG(g_log << Logger::Warning << "Ignoring line of ignorelist due to an error: " << e.what() << endl,
+           g_slog->withName("config")->error(Logr::Warning, e.what(), "Ignoring line of ignorelist due to an error", "exception", Logging::Loggable("std::exception")));
+    }
   }
 }
 
@@ -801,14 +896,21 @@ static void setupNODGlobal()
   g_nodEnabled = ::arg().mustDo("new-domain-tracking");
   g_nodLookupDomain = DNSName(::arg()["new-domain-lookup"]);
   g_nodLog = ::arg().mustDo("new-domain-log");
-  parseNODIgnorelist(::arg()["new-domain-whitelist"]);
-  parseNODIgnorelist(::arg()["new-domain-ignore-list"]);
+  parseIgnorelist(::arg()["new-domain-whitelist"], g_nodDomainWL);
+  parseIgnorelist(::arg()["new-domain-ignore-list"], g_nodDomainWL);
+  if (!::arg().isEmpty("new-domain-ignore-list-file")) {
+    parseIgnorelistFile(::arg()["new-domain-ignore-list-file"], g_nodDomainWL);
+  }
 
   // Setup Unique DNS Response subsystem
   g_udrEnabled = ::arg().mustDo("unique-response-tracking");
   g_udrLog = ::arg().mustDo("unique-response-log");
   g_nod_pbtag = ::arg()["new-domain-pb-tag"];
   g_udr_pbtag = ::arg()["unique-response-pb-tag"];
+  parseIgnorelist(::arg()["unique-response-ignore-list"], g_udrDomainWL);
+  if (!::arg().isEmpty("unique-response-ignore-list-file")) {
+    parseIgnorelistFile(::arg()["unique-response-ignore-list-file"], g_udrDomainWL);
+  }
 }
 #endif /* NOD_ENABLED */
 
@@ -854,7 +956,7 @@ static void usr2Handler([[maybe_unused]] int arg)
 {
   g_quiet = !g_quiet;
   SyncRes::setDefaultLogMode(g_quiet ? SyncRes::LogNone : SyncRes::Log);
-  ::arg().set("quiet") = g_quiet ? "" : "no";
+  ::arg().set("quiet") = g_quiet ? "yes" : "no";
 }
 
 static void checkLinuxIPv6Limits([[maybe_unused]] Logr::log_t log)
@@ -871,11 +973,32 @@ static void checkLinuxIPv6Limits([[maybe_unused]] Logr::log_t log)
 #endif
 }
 
+static void checkOrFixLinuxMapCountLimits([[maybe_unused]] Logr::log_t log)
+{
+#ifdef __linux__
+  string line;
+  if (readFileIfThere("/proc/sys/vm/max_map_count", &line)) {
+    auto lim = std::stoull(line);
+    // mthread stack use 3 maps per stack (2 guard pages + stack itself). Multiple by 4 for extra allowance.
+    // Also add 2 for handler and task threads.
+    auto workers = RecThreadInfo::numTCPWorkers() + RecThreadInfo::numUDPWorkers() + 2;
+    auto mapsNeeded = 4ULL * g_maxMThreads * workers;
+    if (lim < mapsNeeded) {
+      g_maxMThreads = static_cast<unsigned int>(lim / (4ULL * workers));
+      SLOG(g_log << Logger::Error << "sysctl vm.max_map_count= <" << mapsNeeded << ", this may cause 'bad_alloc' exceptions; adjusting max-mthreads to " << g_maxMThreads << endl,
+           log->info(Logr::Error, "sysctl vm.max_map_count < mapsNeeded, this may cause 'bad_alloc' exceptions, adjusting max-mthreads",
+                     "vm.max_map_count", Logging::Loggable(lim), "mapsNeeded", Logging::Loggable(mapsNeeded),
+                     "max-mthreads", Logging::Loggable(g_maxMThreads)));
+    }
+  }
+#endif
+}
+
 static void checkOrFixFDS(Logr::log_t log)
 {
   unsigned int availFDs = getFilenumLimit();
-  unsigned int wantFDs = g_maxMThreads * RecThreadInfo::numWorkers() + 25; // even healthier margin then before
-  wantFDs += RecThreadInfo::numWorkers() * TCPOutConnectionManager::s_maxIdlePerThread;
+  unsigned int wantFDs = g_maxMThreads * (RecThreadInfo::numUDPWorkers() + RecThreadInfo::numTCPWorkers()) + 25; // even healthier margin than before
+  wantFDs += (RecThreadInfo::numUDPWorkers() + RecThreadInfo::numTCPWorkers()) * TCPOutConnectionManager::s_maxIdlePerThread;
 
   if (wantFDs > availFDs) {
     unsigned int hardlimit = getFilenumLimit(true);
@@ -885,36 +1008,13 @@ static void checkOrFixFDS(Logr::log_t log)
            log->info(Logr::Warning, "Raised soft limit on number of filedescriptors to match max-mthreads and threads settings", "limit", Logging::Loggable(wantFDs)));
     }
     else {
-      auto newval = (hardlimit - 25 - TCPOutConnectionManager::s_maxIdlePerThread) / RecThreadInfo::numWorkers();
+      auto newval = (hardlimit - 25 - TCPOutConnectionManager::s_maxIdlePerThread) / (RecThreadInfo::numUDPWorkers() + RecThreadInfo::numTCPWorkers());
       SLOG(g_log << Logger::Warning << "Insufficient number of filedescriptors available for max-mthreads*threads setting! (" << hardlimit << " < " << wantFDs << "), reducing max-mthreads to " << newval << endl,
            log->info(Logr::Warning, "Insufficient number of filedescriptors available for max-mthreads*threads setting! Reducing max-mthreads", "hardlimit", Logging::Loggable(hardlimit), "want", Logging::Loggable(wantFDs), "max-mthreads", Logging::Loggable(newval)));
       g_maxMThreads = newval;
       setFilenumLimit(hardlimit);
     }
   }
-}
-
-// static std::string s_timestampFormat = "%m-%dT%H:%M:%S";
-static std::string s_timestampFormat = "%s";
-
-static const char* toTimestampStringMilli(const struct timeval& tval, std::array<char, 64>& buf)
-{
-  size_t len = 0;
-  if (s_timestampFormat != "%s") {
-    // strftime is not thread safe, it can access locale information
-    static std::mutex mutex;
-    auto lock = std::lock_guard(mutex);
-    struct tm theTime // clang-format insists on formatting it like this
-    {
-    };
-    len = strftime(buf.data(), buf.size(), s_timestampFormat.c_str(), localtime_r(&tval.tv_sec, &theTime));
-  }
-  if (len == 0) {
-    len = snprintf(buf.data(), buf.size(), "%lld", static_cast<long long>(tval.tv_sec));
-  }
-
-  snprintf(&buf.at(len), buf.size() - len, ".%03ld", static_cast<long>(tval.tv_usec) / 1000);
-  return buf.data();
 }
 
 #ifdef HAVE_SYSTEMD
@@ -963,7 +1063,7 @@ static void loggerSDBackend(const Logging::Entry& entry)
     appendKeyAndVal("SUBSYSTEM", entry.name.get());
   }
   std::array<char, 64> timebuf{};
-  appendKeyAndVal("TIMESTAMP", toTimestampStringMilli(entry.d_timestamp, timebuf));
+  appendKeyAndVal("TIMESTAMP", Logging::toTimestampStringMilli(entry.d_timestamp, timebuf));
   for (const auto& value : entry.values) {
     if (value.first.at(0) == '_' || special.count(value.first) != 0) {
       string key{"PDNS"};
@@ -987,6 +1087,49 @@ static void loggerSDBackend(const Logging::Entry& entry)
   sd_journal_sendv(iov.data(), static_cast<int>(iov.size()));
 }
 #endif
+
+static void loggerJSONBackend(const Logging::Entry& entry)
+{
+  // First map SL priority to syslog's Urgency
+  Logger::Urgency urg = entry.d_priority != 0 ? Logger::Urgency(entry.d_priority) : Logger::Info;
+  if (urg > s_logUrgency) {
+    // We do not log anything if the Urgency of the message is lower than the requested loglevel.
+    // Not that lower Urgency means higher number.
+    return;
+  }
+
+  std::array<char, 64> timebuf{};
+  json11::Json::object json = {
+    {"msg", entry.message},
+    {"level", std::to_string(entry.level)},
+    // Thread id filled in by backend, since the SL code does not know about RecursorThreads
+    // We use the Recursor thread, other threads get id 0. May need to revisit.
+    {"tid", std::to_string(RecThreadInfo::id())},
+    {"ts", Logging::toTimestampStringMilli(entry.d_timestamp, timebuf)},
+  };
+
+  if (entry.error) {
+    json.emplace("error", entry.error.get());
+  }
+
+  if (entry.name) {
+    json.emplace("subsystem", entry.name.get());
+  }
+
+  if (entry.d_priority != 0) {
+    json.emplace("priority", std::to_string(entry.d_priority));
+  }
+
+  for (auto const& value : entry.values) {
+    json.emplace(value.first, value.second);
+  }
+
+  static thread_local std::string out;
+  out.clear();
+  json11::Json doc(std::move(json));
+  doc.dump(out);
+  cerr << out << endl;
+}
 
 static void loggerBackend(const Logging::Entry& entry)
 {
@@ -1016,7 +1159,7 @@ static void loggerBackend(const Logging::Entry& entry)
   // We use the Recursor thread, other threads get id 0. May need to revisit.
   buf << " tid=" << std::quoted(std::to_string(RecThreadInfo::id()));
   std::array<char, 64> timebuf{};
-  buf << " ts=" << std::quoted(toTimestampStringMilli(entry.d_timestamp, timebuf));
+  buf << " ts=" << std::quoted(Logging::toTimestampStringMilli(entry.d_timestamp, timebuf));
   for (auto const& value : entry.values) {
     buf << " ";
     buf << value.first << "=" << std::quoted(value.second);
@@ -1038,8 +1181,8 @@ static void doStats()
   static time_t lastOutputTime;
   static uint64_t lastQueryCount;
 
-  uint64_t cacheHits = g_recCache->cacheHits;
-  uint64_t cacheMisses = g_recCache->cacheMisses;
+  uint64_t cacheHits = g_recCache->getCacheHits();
+  uint64_t cacheMisses = g_recCache->getCacheMisses();
   uint64_t cacheSize = g_recCache->size();
   auto rc_stats = g_recCache->stats();
   auto pc_stats = g_packetCache ? g_packetCache->stats() : std::pair<uint64_t, uint64_t>{0, 0};
@@ -1121,8 +1264,8 @@ static void doStats()
     size_t idx = 0;
     for (const auto& threadInfo : RecThreadInfo::infos()) {
       if (threadInfo.isWorker()) {
-        SLOG(g_log << Logger::Notice << "stats: thread " << idx << " has been distributed " << threadInfo.numberOfDistributedQueries << " queries" << endl,
-             log->info(Logr::Info, "Queries handled by thread", "thread", Logging::Loggable(idx), "count", Logging::Loggable(threadInfo.numberOfDistributedQueries)));
+        SLOG(g_log << Logger::Notice << "stats: thread " << idx << " has been distributed " << threadInfo.getNumberOfDistributedQueries() << " queries" << endl,
+             log->info(Logr::Info, "Queries handled by thread", "thread", Logging::Loggable(idx), "tname", Logging::Loggable(threadInfo.getName()), "count", Logging::Loggable(threadInfo.getNumberOfDistributedQueries())));
         ++idx;
       }
     }
@@ -1147,28 +1290,40 @@ static std::shared_ptr<NetmaskGroup> parseACL(const std::string& aclFile, const 
 {
   auto result = std::make_shared<NetmaskGroup>();
 
-  if (!::arg()[aclFile].empty()) {
-    string line;
-    ifstream ifs(::arg()[aclFile].c_str());
-    if (!ifs) {
-      throw runtime_error("Could not open '" + ::arg()[aclFile] + "': " + stringerror());
-    }
+  const string file = ::arg()[aclFile];
 
-    while (getline(ifs, line)) {
-      auto pos = line.find('#');
-      if (pos != string::npos) {
-        line.resize(pos);
+  if (!file.empty()) {
+    if (boost::ends_with(file, ".yml")) {
+      ::rust::vec<::rust::string> vec;
+      pdns::settings::rec::readYamlAllowFromFile(file, vec, log);
+      for (const auto& subnet : vec) {
+        result->addMask(string(subnet));
       }
-      boost::trim(line);
-      if (line.empty()) {
-        continue;
+    }
+    else {
+      string line;
+      ifstream ifs(file);
+      if (!ifs) {
+        int err = errno;
+        throw runtime_error("Could not open '" + file + "': " + stringerror(err));
       }
 
-      result->addMask(line);
+      while (getline(ifs, line)) {
+        auto pos = line.find('#');
+        if (pos != string::npos) {
+          line.resize(pos);
+        }
+        boost::trim(line);
+        if (line.empty()) {
+          continue;
+        }
+
+        result->addMask(line);
+      }
     }
-    SLOG(g_log << Logger::Info << "Done parsing " << result->size() << " " << aclSetting << " ranges from file '" << ::arg()[aclFile] << "' - overriding '" << aclSetting << "' setting" << endl,
+    SLOG(g_log << Logger::Info << "Done parsing " << result->size() << " " << aclSetting << " ranges from file '" << file << "' - overriding '" << aclSetting << "' setting" << endl,
          log->info(Logr::Info, "Done parsing ranges from file, will override setting", "setting", Logging::Loggable(aclSetting),
-                   "number", Logging::Loggable(result->size()), "file", Logging::Loggable(::arg()[aclFile])));
+                   "number", Logging::Loggable(result->size()), "file", Logging::Loggable(file)));
   }
   else if (!::arg()[aclSetting].empty()) {
     vector<string> ips;
@@ -1220,51 +1375,76 @@ void parseACLs()
   static bool l_initialized;
 
   if (l_initialized) { // only reload configuration file on second call
-    string configName = ::arg()["config-dir"] + "/recursor.conf";
+
+    string configName = ::arg()["config-dir"] + "/recursor";
     if (!::arg()["config-name"].empty()) {
-      configName = ::arg()["config-dir"] + "/recursor-" + ::arg()["config-name"] + ".conf";
+      configName = ::arg()["config-dir"] + "/recursor-" + ::arg()["config-name"];
     }
     cleanSlashes(configName);
 
-    if (!::arg().preParseFile(configName.c_str(), "allow-from-file")) {
-      throw runtime_error("Unable to re-parse configuration file '" + configName + "'");
-    }
-    ::arg().preParseFile(configName.c_str(), "allow-from", LOCAL_NETS);
+    if (g_yamlSettings) {
+      configName += g_yamlSettingsSuffix;
+      string msg;
+      pdns::rust::settings::rec::Recursorsettings settings;
+      // XXX Does ::arg()["include-dir"] have the right value, i.e. potentially overriden by command line?
+      auto yamlstatus = pdns::settings::rec::readYamlSettings(configName, ::arg()["include-dir"], settings, msg, log);
 
-    if (!::arg().preParseFile(configName.c_str(), "allow-notify-from-file")) {
-      throw runtime_error("Unable to re-parse configuration file '" + configName + "'");
-    }
-    ::arg().preParseFile(configName.c_str(), "allow-notify-from");
-
-    ::arg().preParseFile(configName.c_str(), "include-dir");
-    ::arg().preParse(g_argc, g_argv, "include-dir");
-
-    // then process includes
-    std::vector<std::string> extraConfigs;
-    ::arg().gatherIncludes(extraConfigs);
-
-    for (const std::string& fileName : extraConfigs) {
-      if (!::arg().preParseFile(fileName.c_str(), "allow-from-file", ::arg()["allow-from-file"])) {
-        throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
-      }
-      if (!::arg().preParseFile(fileName.c_str(), "allow-from", ::arg()["allow-from"])) {
-        throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
-      }
-
-      if (!::arg().preParseFile(fileName.c_str(), "allow-notify-from-file", ::arg()["allow-notify-from-file"])) {
-        throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
-      }
-      if (!::arg().preParseFile(fileName.c_str(), "allow-notify-from", ::arg()["allow-notify-from"])) {
-        throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
+      switch (yamlstatus) {
+      case pdns::settings::rec::YamlSettingsStatus::CannotOpen:
+        throw runtime_error("Unable to open '" + configName + "': " + msg);
+        break;
+      case pdns::settings::rec::YamlSettingsStatus::PresentButFailed:
+        throw runtime_error("Error processing '" + configName + "': " + msg);
+        break;
+      case pdns::settings::rec::YamlSettingsStatus::OK:
+        pdns::settings::rec::processAPIDir(arg()["include-dir"], settings, log);
+        // Does *not* set include-dir
+        pdns::settings::rec::setArgsForACLRelatedSettings(settings);
+        break;
       }
     }
+    else {
+      configName += ".conf";
+      if (!::arg().preParseFile(configName, "allow-from-file")) {
+        throw runtime_error("Unable to re-parse configuration file '" + configName + "'");
+      }
+      ::arg().preParseFile(configName, "allow-from", LOCAL_NETS);
 
-    ::arg().preParse(g_argc, g_argv, "allow-from-file");
-    ::arg().preParse(g_argc, g_argv, "allow-from");
+      if (!::arg().preParseFile(configName, "allow-notify-from-file")) {
+        throw runtime_error("Unable to re-parse configuration file '" + configName + "'");
+      }
+      ::arg().preParseFile(configName, "allow-notify-from");
 
-    ::arg().preParse(g_argc, g_argv, "allow-notify-from-file");
-    ::arg().preParse(g_argc, g_argv, "allow-notify-from");
+      ::arg().preParseFile(configName, "include-dir");
+      ::arg().preParse(g_argc, g_argv, "include-dir");
+
+      // then process includes
+      std::vector<std::string> extraConfigs;
+      ::arg().gatherIncludes(::arg()["include-dir"], ".conf", extraConfigs);
+
+      for (const std::string& fileName : extraConfigs) {
+        if (!::arg().preParseFile(fileName, "allow-from-file", ::arg()["allow-from-file"])) {
+          throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
+        }
+        if (!::arg().preParseFile(fileName, "allow-from", ::arg()["allow-from"])) {
+          throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
+        }
+
+        if (!::arg().preParseFile(fileName, "allow-notify-from-file", ::arg()["allow-notify-from-file"])) {
+          throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
+        }
+        if (!::arg().preParseFile(fileName, "allow-notify-from", ::arg()["allow-notify-from"])) {
+          throw runtime_error("Unable to re-parse configuration file include '" + fileName + "'");
+        }
+      }
+    }
   }
+  // Process command line args potentially overriding settings read from file
+  ::arg().preParse(g_argc, g_argv, "allow-from-file");
+  ::arg().preParse(g_argc, g_argv, "allow-from");
+
+  ::arg().preParse(g_argc, g_argv, "allow-notify-from-file");
+  ::arg().preParse(g_argc, g_argv, "allow-notify-from");
 
   auto allowFrom = parseACL("allow-from-file", "allow-from", log);
 
@@ -1277,11 +1457,13 @@ void parseACLs()
   }
 
   g_initialAllowFrom = allowFrom;
+  // coverity[copy_constructor_call] maybe this can be avoided, but be careful as pointers get passed to other threads
   broadcastFunction([=] { return pleaseSupplantAllowFrom(allowFrom); });
 
   auto allowNotifyFrom = parseACL("allow-notify-from-file", "allow-notify-from", log);
 
   g_initialAllowNotifyFrom = allowNotifyFrom;
+  // coverity[copy_constructor_call] maybe this can be avoided, but be careful as pointers get passed to other threads
   broadcastFunction([=] { return pleaseSupplantAllowNotifyFrom(allowNotifyFrom); });
 
   l_initialized = true;
@@ -1312,14 +1494,14 @@ void broadcastFunction(const pipefunc_t& func)
     ThreadMSG* tmsg = new ThreadMSG(); // NOLINT: manual ownership handling
     tmsg->func = func;
     tmsg->wantAnswer = true;
-    if (write(threadInfo.pipes.writeToThread, &tmsg, sizeof(tmsg)) != sizeof(tmsg)) { // NOLINT: sizeof correct
+    if (write(threadInfo.getPipes().writeToThread, &tmsg, sizeof(tmsg)) != sizeof(tmsg)) { // NOLINT: sizeof correct
       delete tmsg; // NOLINT: manual ownership handling
 
       unixDie("write to thread pipe returned wrong size or error");
     }
 
     string* resp = nullptr;
-    if (read(threadInfo.pipes.readFromThread, &resp, sizeof(resp)) != sizeof(resp)) { // NOLINT: sizeof correct
+    if (read(threadInfo.getPipes().readFromThread, &resp, sizeof(resp)) != sizeof(resp)) { // NOLINT: sizeof correct
       unixDie("read from thread pipe returned wrong size or error");
     }
 
@@ -1387,7 +1569,7 @@ T broadcastAccFunction(const std::function<T*()>& func)
       continue;
     }
 
-    const auto& tps = threadInfo.pipes;
+    const auto& tps = threadInfo.getPipes();
     ThreadMSG* tmsg = new ThreadMSG(); // NOLINT: manual ownership handling
     tmsg->func = [func] { return voider<T>(func); };
     tmsg->wantAnswer = true;
@@ -1492,6 +1674,10 @@ static int initDNSSEC(Logr::log_t log)
 
   g_dnssecLogBogus = ::arg().mustDo("dnssec-log-bogus");
   g_maxNSEC3Iterations = ::arg().asNum("nsec3-max-iterations");
+  g_maxRRSIGsPerRecordToConsider = ::arg().asNum("max-rrsigs-per-record");
+  g_maxNSEC3sPerRecordToConsider = ::arg().asNum("max-nsec3s-per-record");
+  g_maxDNSKEYsToConsider = ::arg().asNum("max-dnskeys");
+  g_maxDSsToConsider = ::arg().asNum("max-ds-per-zone");
 
   vector<string> nums;
   bool automatic = true;
@@ -1556,7 +1742,7 @@ static void initDontQuery(Logr::log_t log)
   }
 }
 
-static int initSyncRes(Logr::log_t log, const std::optional<std::string>& myHostname)
+static int initSyncRes(Logr::log_t log)
 {
   SyncRes::s_minimumTTL = ::arg().asNum("minimum-ttl-override");
   SyncRes::s_minimumECSTTL = ::arg().asNum("ecs-minimum-ttl-override");
@@ -1571,14 +1757,18 @@ static int initSyncRes(Logr::log_t log, const std::optional<std::string>& myHost
 
   SyncRes::s_serverdownmaxfails = ::arg().asNum("server-down-max-fails");
   SyncRes::s_serverdownthrottletime = ::arg().asNum("server-down-throttle-time");
+  SyncRes::s_unthrottle_n = ::arg().asNum("bypass-server-throttling-probability");
   SyncRes::s_nonresolvingnsmaxfails = ::arg().asNum("non-resolving-ns-max-fails");
   SyncRes::s_nonresolvingnsthrottletime = ::arg().asNum("non-resolving-ns-throttle-time");
   SyncRes::s_serverID = ::arg()["server-id"];
+  // This bound is dynamically adjusted in SyncRes, depending on qname minimization being active
   SyncRes::s_maxqperq = ::arg().asNum("max-qperq");
   SyncRes::s_maxnsperresolve = ::arg().asNum("max-ns-per-resolve");
   SyncRes::s_maxnsaddressqperq = ::arg().asNum("max-ns-address-qperq");
   SyncRes::s_maxtotusec = 1000 * ::arg().asNum("max-total-msec");
   SyncRes::s_maxdepth = ::arg().asNum("max-recursion-depth");
+  SyncRes::s_maxvalidationsperq = ::arg().asNum("max-signature-validations-per-query");
+  SyncRes::s_maxnsec3iterationsperq = ::arg().asNum("max-nsec3-hash-computations-per-query");
   SyncRes::s_rootNXTrust = ::arg().mustDo("root-nx-trust");
   SyncRes::s_refresh_ttlperc = ::arg().asNum("refresh-on-ttl-perc");
   SyncRes::s_locked_ttlperc = ::arg().asNum("record-cache-locked-ttl-perc");
@@ -1590,6 +1780,7 @@ static int initSyncRes(Logr::log_t log, const std::optional<std::string>& myHost
   SyncRes::s_event_trace_enabled = ::arg().asNum("event-trace-enabled");
   SyncRes::s_save_parent_ns_set = ::arg().mustDo("save-parent-ns-set");
   SyncRes::s_max_busy_dot_probes = ::arg().asNum("max-busy-dot-probes");
+  SyncRes::s_max_CNAMES_followed = ::arg().asNum("max-cnames-followed");
   {
     uint64_t sse = ::arg().asNum("serve-stale-extensions");
     if (sse > std::numeric_limits<uint16_t>::max()) {
@@ -1605,11 +1796,6 @@ static int initSyncRes(Logr::log_t log, const std::optional<std::string>& myHost
     checkFastOpenSysctl(true, log);
     checkTFOconnect(log);
   }
-
-  if (SyncRes::s_serverID.empty()) {
-    SyncRes::s_serverID = myHostname.has_value() ? *myHostname : "";
-  }
-
   SyncRes::s_ecsipv4limit = ::arg().asNum("ecs-ipv4-bits");
   SyncRes::s_ecsipv6limit = ::arg().asNum("ecs-ipv6-bits");
   SyncRes::clearECSStats();
@@ -1620,12 +1806,8 @@ static int initSyncRes(Logr::log_t log, const std::optional<std::string>& myHost
   SyncRes::s_ecscachelimitttl = ::arg().asNum("ecs-cache-limit-ttl");
 
   SyncRes::s_qnameminimization = ::arg().mustDo("qname-minimization");
-
-  if (SyncRes::s_qnameminimization) {
-    // With an empty cache, a rev ipv6 query with dnssec enabled takes
-    // almost 100 queries. Default maxqperq is 60.
-    SyncRes::s_maxqperq = std::max(SyncRes::s_maxqperq, static_cast<unsigned int>(100));
-  }
+  SyncRes::s_minimize_one_label = ::arg().asNum("qname-minimize-one-label");
+  SyncRes::s_max_minimize_count = ::arg().asNum("qname-max-minimize-count");
 
   SyncRes::s_hardenNXD = SyncRes::HardenNXD::DNSSEC;
   string value = ::arg()["nothing-below-nxdomain"];
@@ -1687,50 +1869,45 @@ static void initDistribution(Logr::log_t log)
   g_reusePort = ::arg().mustDo("reuseport");
 #endif
 
-  RecThreadInfo::infos().resize(RecThreadInfo::numHandlers() + RecThreadInfo::numDistributors() + RecThreadInfo::numWorkers() + RecThreadInfo::numTaskThreads());
+  RecThreadInfo::infos().resize(RecThreadInfo::numRecursorThreads());
 
   if (g_reusePort) {
+    unsigned int threadNum = 1;
     if (RecThreadInfo::weDistributeQueries()) {
       /* first thread is the handler, then distributors */
-      for (unsigned int threadId = 1; threadId <= RecThreadInfo::numDistributors(); threadId++) {
-        auto& info = RecThreadInfo::info(threadId);
-        auto& deferredAdds = info.deferredAdds;
-        auto& tcpSockets = info.tcpSockets;
+      for (unsigned int i = 0; i < RecThreadInfo::numDistributors(); i++, threadNum++) {
+        auto& info = RecThreadInfo::info(threadNum);
+        auto& deferredAdds = info.getDeferredAdds();
         makeUDPServerSockets(deferredAdds, log);
-        makeTCPServerSockets(deferredAdds, tcpSockets, log);
       }
     }
     else {
       /* first thread is the handler, there is no distributor here and workers are accepting queries */
-      for (unsigned int threadId = 1; threadId <= RecThreadInfo::numWorkers(); threadId++) {
-        auto& info = RecThreadInfo::info(threadId);
-        auto& deferredAdds = info.deferredAdds;
-        auto& tcpSockets = info.tcpSockets;
+      for (unsigned int i = 0; i < RecThreadInfo::numUDPWorkers(); i++, threadNum++) {
+        auto& info = RecThreadInfo::info(threadNum);
+        auto& deferredAdds = info.getDeferredAdds();
         makeUDPServerSockets(deferredAdds, log);
-        makeTCPServerSockets(deferredAdds, tcpSockets, log);
       }
+    }
+    threadNum = 1 + RecThreadInfo::numDistributors() + RecThreadInfo::numUDPWorkers();
+    for (unsigned int i = 0; i < RecThreadInfo::numTCPWorkers(); i++, threadNum++) {
+      auto& info = RecThreadInfo::info(threadNum);
+      auto& deferredAdds = info.getDeferredAdds();
+      auto& tcpSockets = info.getTCPSockets();
+      makeTCPServerSockets(deferredAdds, tcpSockets, log);
     }
   }
   else {
     std::set<int> tcpSockets;
     /* we don't have reuseport so we can only open one socket per
        listening addr:port and everyone will listen on it */
-    makeUDPServerSockets(g_deferredAdds, log);
-    makeTCPServerSockets(g_deferredAdds, tcpSockets, log);
+    makeUDPServerSockets(s_deferredUDPadds, log);
+    makeTCPServerSockets(s_deferredTCPadds, tcpSockets, log);
 
-    /* every listener (so distributor if g_weDistributeQueries, workers otherwise)
-       needs to listen to the shared sockets */
-    if (RecThreadInfo::weDistributeQueries()) {
-      /* first thread is the handler, then distributors */
-      for (unsigned int threadId = 1; threadId <= RecThreadInfo::numDistributors(); threadId++) {
-        RecThreadInfo::info(threadId).tcpSockets = tcpSockets;
-      }
-    }
-    else {
-      /* first thread is the handler, there is no distributor here and workers are accepting queries */
-      for (unsigned int threadId = 1; threadId <= RecThreadInfo::numWorkers(); threadId++) {
-        RecThreadInfo::info(threadId).tcpSockets = tcpSockets;
-      }
+    // TCP queries are handled by TCP workers
+    for (unsigned int i = 0; i < RecThreadInfo::numTCPWorkers(); i++) {
+      auto& info = RecThreadInfo::info(i + 1 + RecThreadInfo::numDistributors() + RecThreadInfo::numUDPWorkers());
+      info.setTCPSockets(tcpSockets);
     }
   }
 }
@@ -1768,6 +1945,10 @@ static int initForks(Logr::log_t log)
     signal(SIGTERM, termIntHandler);
     signal(SIGINT, termIntHandler);
   }
+#if defined(__SANITIZE_THREAD__) || (defined(__SANITIZE_ADDRESS__) && defined(HAVE_LEAK_SANITIZER_INTERFACE))
+  // If san is wanted, we dump the info ourselves
+  signal(SIGTERM, termIntHandler);
+#endif
 
   signal(SIGUSR1, usr1Handler);
   signal(SIGUSR2, usr2Handler);
@@ -1881,12 +2062,8 @@ static void initSuffixMatchNodes([[maybe_unused]] Logr::log_t log)
     }
     g_dontThrottleNames.setState(std::move(dontThrottleNames));
 
-    parts.clear();
     NetmaskGroup dontThrottleNetmasks;
-    stringtok(parts, ::arg()["dont-throttle-netmasks"], " ,");
-    for (const auto& part : parts) {
-      dontThrottleNetmasks.addMask(Netmask(part));
-    }
+    dontThrottleNetmasks.toMasks(::arg()["dont-throttle-netmasks"]);
     g_dontThrottleNetmasks.setState(std::move(dontThrottleNetmasks));
   }
 
@@ -1905,7 +2082,7 @@ static void initSuffixMatchNodes([[maybe_unused]] Logr::log_t log)
     vector<string> parts;
     stringtok(parts, ::arg()["dot-to-auth-names"], " ,");
 #ifndef HAVE_DNS_OVER_TLS
-    if (parts.size()) {
+    if (!parts.empty()) {
       SLOG(g_log << Logger::Error << "dot-to-auth-names setting contains names, but Recursor was built without DNS over TLS support. Setting will be ignored." << endl,
            log->info(Logr::Error, "dot-to-auth-names setting contains names, but Recursor was built without DNS over TLS support. Setting will be ignored"));
     }
@@ -1971,8 +2148,6 @@ static int serviceMain(Logr::log_t log)
     }
   }
 
-  showProductVersion();
-
   g_disthashseed = dns_random_uint32();
 
   int ret = initNet(log);
@@ -1986,16 +2161,10 @@ static int serviceMain(Logr::log_t log)
   }
   g_maxCacheEntries = ::arg().asNum("max-cache-entries");
 
-  luaConfigDelayedThreads delayedLuaThreads;
-  try {
-    ProxyMapping proxyMapping;
-    loadRecursorLuaConfig(::arg()["lua-config-file"], delayedLuaThreads, proxyMapping);
-    // Initial proxy mapping
-    g_proxyMapping = proxyMapping.empty() ? nullptr : std::make_unique<ProxyMapping>(proxyMapping);
-  }
-  catch (PDNSException& e) {
-    SLOG(g_log << Logger::Error << "Cannot load Lua configuration: " << e.reason << endl,
-         log->error(Logr::Error, e.reason, "Cannot load Lua configuration"));
+  auto luaResult = luaconfig(false);
+  if (luaResult.d_ret != 0) {
+    SLOG(g_log << Logger::Error << "Cannot load Lua or equivalent YAML configuration: " << luaResult.d_str << endl,
+         log->error(Logr::Error, luaResult.d_str, "Cannot load Lua or equivalent YAML configuration"));
     return 1;
   }
 
@@ -2020,18 +2189,21 @@ static int serviceMain(Logr::log_t log)
     ::arg().set("quiet") = "no";
     g_quiet = false;
   }
-  auto myHostname = getHostname();
-  if (!myHostname.has_value()) {
-    SLOG(g_log << Logger::Warning << "Unable to get the hostname, NSID and id.server values will be empty" << endl,
-         log->info(Logr::Warning, "Unable to get the hostname, NSID and id.server values will be empty"));
-  }
 
-  ret = initSyncRes(log, myHostname);
+  ret = initSyncRes(log);
   if (ret != 0) {
     return ret;
   }
 
   g_proxyProtocolACL.toMasks(::arg()["proxy-protocol-from"]);
+  {
+    std::vector<std::string> vec;
+    stringtok(vec, ::arg()["proxy-protocol-exceptions"], ", ");
+    for (const auto& sockAddrStr : vec) {
+      ComboAddress sockAddr(sockAddrStr, 53);
+      g_proxyProtocolExceptions.emplace(sockAddr);
+    }
+  }
   g_proxyProtocolMaximumSize = ::arg().asNum("proxy-protocol-maximum-size");
 
   ret = initDNS64(log);
@@ -2040,7 +2212,7 @@ static int serviceMain(Logr::log_t log)
   }
   g_networkTimeoutMsec = ::arg().asNum("network-timeout");
 
-  std::tie(g_initialDomainMap, g_initialAllowNotifyFor) = parseZoneConfiguration();
+  std::tie(g_initialDomainMap, g_initialAllowNotifyFor) = parseZoneConfiguration(g_yamlSettings);
 
   g_latencyStatSize = ::arg().asNum("latency-statistic-size");
 
@@ -2048,6 +2220,7 @@ static int serviceMain(Logr::log_t log)
   g_logRPZChanges = ::arg().mustDo("log-rpz-changes");
 
   g_anyToTcp = ::arg().mustDo("any-to-tcp");
+  g_allowNoRD = ::arg().mustDo("allow-no-rd");
   g_udpTruncationThreshold = ::arg().asNum("udp-truncation-threshold");
 
   g_lowercaseOutgoing = ::arg().mustDo("lowercase-outgoing");
@@ -2068,11 +2241,17 @@ static int serviceMain(Logr::log_t log)
   g_paddingOutgoing = ::arg().mustDo("edns-padding-out");
 
   RecThreadInfo::setNumDistributorThreads(::arg().asNum("distributor-threads"));
-  RecThreadInfo::setNumWorkerThreads(::arg().asNum("threads"));
-  if (RecThreadInfo::numWorkers() < 1) {
+  RecThreadInfo::setNumUDPWorkerThreads(::arg().asNum("threads"));
+  if (RecThreadInfo::numUDPWorkers() < 1) {
     SLOG(g_log << Logger::Warning << "Asked to run with 0 threads, raising to 1 instead" << endl,
          log->info(Logr::Warning, "Asked to run with 0 threads, raising to 1 instead"));
-    RecThreadInfo::setNumWorkerThreads(1);
+    RecThreadInfo::setNumUDPWorkerThreads(1);
+  }
+  RecThreadInfo::setNumTCPWorkerThreads(::arg().asNum("tcp-threads"));
+  if (RecThreadInfo::numTCPWorkers() < 1) {
+    SLOG(g_log << Logger::Warning << "Asked to run with 0 TCP threads, raising to 1 instead" << endl,
+         log->info(Logr::Warning, "Asked to run with 0 TCP threads, raising to 1 instead"));
+    RecThreadInfo::setNumTCPWorkerThreads(1);
   }
 
   g_maxMThreads = ::arg().asNum("max-mthreads");
@@ -2109,6 +2288,7 @@ static int serviceMain(Logr::log_t log)
     }
   }
 
+  AggressiveNSECCache::s_nsec3DenialProofMaxCost = ::arg().asNum("aggressive-cache-max-nsec3-hash-cost");
   AggressiveNSECCache::s_maxNSEC3CommonPrefix = static_cast<uint8_t>(std::round(std::log2(::arg().asNum("aggressive-cache-min-nsec3-hit-ratio"))));
   SLOG(g_log << Logger::Debug << "NSEC3 aggressive cache tuning: aggressive-cache-min-nsec3-hit-ratio: " << ::arg().asNum("aggressive-cache-min-nsec3-hit-ratio") << " max common prefix bits: " << std::to_string(AggressiveNSECCache::s_maxNSEC3CommonPrefix) << endl,
        log->info(Logr::Debug, "NSEC3 aggressive cache tuning", "aggressive-cache-min-nsec3-hit-ratio", Logging::Loggable(::arg().asNum("aggressive-cache-min-nsec3-hit-ratio")), "maxCommonPrefixBits", Logging::Loggable(AggressiveNSECCache::s_maxNSEC3CommonPrefix)));
@@ -2125,6 +2305,7 @@ static int serviceMain(Logr::log_t log)
   auto forks = initForks(log);
 
   checkOrFixFDS(log);
+  checkOrFixLinuxMapCountLimits(log);
 
 #ifdef HAVE_LIBSODIUM
   if (sodium_init() == -1) {
@@ -2136,10 +2317,6 @@ static int serviceMain(Logr::log_t log)
 
   openssl_thread_setup();
   openssl_seed();
-
-  if (::arg()["server-id"].empty()) {
-    ::arg().set("server-id") = myHostname.has_value() ? *myHostname : "";
-  }
 
   gid_t newgid = 0;
   if (!::arg()["setgid"].empty()) {
@@ -2157,8 +2334,10 @@ static int serviceMain(Logr::log_t log)
     return ret;
   }
 
-  startLuaConfigDelayedThreads(delayedLuaThreads, g_luaconfs.getCopy().generation);
-  delayedLuaThreads.rpzPrimaryThreads.clear(); // no longer needed
+  {
+    auto lci = g_luaconfs.getCopy();
+    startLuaConfigDelayedThreads(lci.rpzs, lci.generation);
+  }
 
   RecThreadInfo::makeThreadPipes(log);
 
@@ -2168,6 +2347,7 @@ static int serviceMain(Logr::log_t log)
   g_maxUDPQueriesPerRound = ::arg().asNum("max-udp-queries-per-round");
 
   g_useKernelTimestamp = ::arg().mustDo("protobuf-use-kernel-timestamp");
+  g_maxChainLength = ::arg().asNum("max-chain-length");
 
   disableStats(StatComponent::API, ::arg()["stats-api-blacklist"]);
   disableStats(StatComponent::Carbon, ::arg()["stats-carbon-blacklist"]);
@@ -2189,6 +2369,10 @@ static int serviceMain(Logr::log_t log)
     return ret;
   }
 
+#ifdef NOD_ENABLED
+  setupNODThread(log);
+#endif /* NOD_ENABLED */
+
   return RecThreadInfo::runThreads(log);
 }
 
@@ -2204,20 +2388,17 @@ static void handlePipeRequest(int fileDesc, FDMultiplexer::funcparam_t& /* var *
   try {
     resp = tmsg->func();
   }
-  catch (std::exception& e) {
-    if (g_logCommonErrors) {
-      SLOG(g_log << Logger::Error << "PIPE function we executed created exception: " << e.what() << endl, // but what if they wanted an answer.. we send 0
-           g_slog->withName("runtime")->error(Logr::Error, e.what(), "PIPE function we executed created exception", "exception", Logging::Loggable("std::exception")));
-    }
+  catch (const PDNSException& pdnsException) {
+    s_rateLimitedLogger.log(g_slog->withName("runtime"), "PIPE function", pdnsException);
   }
-  catch (PDNSException& e) {
-    if (g_logCommonErrors) {
-      SLOG(g_log << Logger::Error << "PIPE function we executed created PDNS exception: " << e.reason << endl, // but what if they wanted an answer.. we send 0
-           g_slog->withName("runtime")->error(Logr::Error, e.reason, "PIPE function we executed created exception", "exception", Logging::Loggable("PDNSException")));
-    }
+  catch (const std::exception& stdException) {
+    s_rateLimitedLogger.log(g_slog->withName("runtime"), "PIPE function", stdException);
+  }
+  catch (...) {
+    s_rateLimitedLogger.log(g_slog->withName("runtime"), "PIPE function");
   }
   if (tmsg->wantAnswer) {
-    if (write(RecThreadInfo::self().pipes.writeFromThread, &resp, sizeof(resp)) != sizeof(resp)) {
+    if (write(RecThreadInfo::self().getPipes().writeFromThread, &resp, sizeof(resp)) != sizeof(resp)) {
       delete tmsg; // NOLINT: manual ownership handling
       unixDie("write to thread pipe returned wrong size or error");
     }
@@ -2238,9 +2419,8 @@ static void handleRCC(int fileDesc, FDMultiplexer::funcparam_t& /* var */)
     SLOG(g_log << Logger::Info << "Received rec_control command '" << msg << "' via controlsocket" << endl,
          log->info(Logr::Info, "Received rec_control command via control socket", "command", Logging::Loggable(msg)));
 
-    RecursorControlParser rcp;
     RecursorControlParser::func_t* command = nullptr;
-    auto answer = rcp.getAnswer(clientfd, msg, &command);
+    auto answer = RecursorControlParser::getAnswer(clientfd, msg, &command);
 
     g_rcc.send(clientfd, answer);
     command();
@@ -2269,7 +2449,6 @@ public:
   void runIfDue(struct timeval& now, const std::function<void()>& function)
   {
     if (last_run < now - period) {
-      // cerr << RecThreadInfo::id() << ' ' << name << ' ' << now.tv_sec << '.' << now.tv_usec << " running" << endl;
       function();
       Utility::gettimeofday(&last_run);
       now = last_run;
@@ -2302,7 +2481,7 @@ private:
     0, 0
   };
   struct timeval period;
-  const string name;
+  string name;
 };
 
 static void houseKeepingWork(Logr::log_t log)
@@ -2353,18 +2532,18 @@ static void houseKeepingWork(Logr::log_t log)
   else if (info.isHandler()) {
     if (g_packetCache) {
       static PeriodicTask packetCacheTask{"packetCacheTask", 5};
-      packetCacheTask.runIfDue(now, []() {
-        g_packetCache->doPruneTo(g_maxPacketCacheEntries);
+      packetCacheTask.runIfDue(now, [now]() {
+        g_packetCache->doPruneTo(now.tv_sec, g_maxPacketCacheEntries);
       });
     }
     static PeriodicTask recordCachePruneTask{"RecordCachePruneTask", 5};
-    recordCachePruneTask.runIfDue(now, []() {
-      g_recCache->doPrune(g_maxCacheEntries);
+    recordCachePruneTask.runIfDue(now, [now]() {
+      g_recCache->doPrune(now.tv_sec, g_maxCacheEntries);
     });
 
     static PeriodicTask negCachePruneTask{"NegCachePrunteTask", 5};
-    negCachePruneTask.runIfDue(now, []() {
-      g_negCache->prune(g_maxCacheEntries / 8);
+    negCachePruneTask.runIfDue(now, [now]() {
+      g_negCache->prune(now.tv_sec, g_maxCacheEntries / 8);
     });
 
     static PeriodicTask aggrNSECPruneTask{"AggrNSECPruneTask", 5};
@@ -2472,7 +2651,7 @@ static void houseKeepingWork(Logr::log_t log)
         SLOG(g_log << Logger::Debug << "Refreshing Trust Anchors from file" << endl,
              log->info(Logr::Debug, "Refreshing Trust Anchors from file"));
         try {
-          map<DNSName, dsmap_t> dsAnchors;
+          map<DNSName, dsset_t> dsAnchors;
           if (updateTrustAnchorsFromFile(luaconfsLocal->trustAnchorFileInfo.fname, dsAnchors, log)) {
             g_luaconfs.modify([&dsAnchors](LuaConfigItems& lci) {
               lci.dsAnchors = dsAnchors;
@@ -2520,8 +2699,7 @@ static void runLuaMaintenance(RecThreadInfo& threadInfo, time_t& last_lua_mainte
 {
   if (t_pdl != nullptr) {
     // lua-dns-script directive is present, call the maintenance callback if needed
-    /* remember that the listener threads handle TCP queries */
-    if (threadInfo.isWorker() || threadInfo.isListener()) {
+    if (threadInfo.isWorker()) { // either UDP of TCP worker
       // Only on threads processing queries
       if (g_now.tv_sec - last_lua_maintenance >= luaMaintenanceInterval) {
         struct timeval start
@@ -2543,10 +2721,10 @@ static void runLuaMaintenance(RecThreadInfo& threadInfo, time_t& last_lua_mainte
 
 static void runTCPMaintenance(RecThreadInfo& threadInfo, bool& listenOnTCP, unsigned int maxTcpClients)
 {
-  if (threadInfo.isListener()) {
+  if (threadInfo.isTCPListener()) {
     if (listenOnTCP) {
       if (TCPConnection::getCurrentConnections() > maxTcpClients) { // shutdown, too many connections
-        for (const auto fileDesc : threadInfo.tcpSockets) {
+        for (const auto fileDesc : threadInfo.getTCPSockets()) {
           t_fdm->removeReadFD(fileDesc);
         }
         listenOnTCP = false;
@@ -2554,7 +2732,7 @@ static void runTCPMaintenance(RecThreadInfo& threadInfo, bool& listenOnTCP, unsi
     }
     else {
       if (TCPConnection::getCurrentConnections() <= maxTcpClients) { // reenable
-        for (const auto fileDesc : threadInfo.tcpSockets) {
+        for (const auto fileDesc : threadInfo.getTCPSockets()) {
           t_fdm->addReadFD(fileDesc, handleNewTCPQuestion);
         }
         listenOnTCP = true;
@@ -2576,62 +2754,70 @@ static void recLoop()
   auto& threadInfo = RecThreadInfo::self();
 
   while (!RecursorControlChannel::stop) {
-    while (g_multiTasker->schedule(&g_now)) {
-      ; // MTasker letting the mthreads do their thing
-    }
-
-    // Use primes, it avoid not being scheduled in cases where the counter has a regular pattern.
-    // We want to call handler thread often, it gets scheduled about 2 times per second
-    if (((threadInfo.isHandler() || threadInfo.isTaskThread()) && s_counter % 11 == 0) || s_counter % 499 == 0) {
-      struct timeval start
-      {
-      };
-      Utility::gettimeofday(&start);
-      g_multiTasker->makeThread(houseKeeping, nullptr);
-      if (!threadInfo.isTaskThread()) {
-        struct timeval stop
-        {
-        };
-        Utility::gettimeofday(&stop);
-        t_Counters.at(rec::Counter::maintenanceUsec) += uSec(stop - start);
-        ++t_Counters.at(rec::Counter::maintenanceCalls);
+    try {
+      while (g_multiTasker->schedule(g_now)) {
+        ; // MTasker letting the mthreads do their thing
       }
-    }
 
-    if (s_counter % 55 == 0) {
-      auto expired = t_fdm->getTimeouts(g_now);
-
-      for (const auto& exp : expired) {
-        auto conn = boost::any_cast<shared_ptr<TCPConnection>>(exp.second);
-        if (g_logCommonErrors) {
-          SLOG(g_log << Logger::Warning << "Timeout from remote TCP client " << conn->d_remote.toStringWithPort() << endl,
-               g_slogtcpin->info(Logr::Warning, "Timeout from remote TCP client", "remote", Logging::Loggable(conn->d_remote)));
+      // Use primes, it avoid not being scheduled in cases where the counter has a regular pattern.
+      // We want to call handler thread often, it gets scheduled about 2 times per second
+      if (((threadInfo.isHandler() || threadInfo.isTaskThread()) && s_counter % 11 == 0) || s_counter % 499 == 0) {
+        timeval start{};
+        Utility::gettimeofday(&start);
+        g_multiTasker->makeThread(houseKeeping, nullptr);
+        if (!threadInfo.isTaskThread()) {
+          timeval stop{};
+          Utility::gettimeofday(&stop);
+          t_Counters.at(rec::Counter::maintenanceUsec) += uSec(stop - start);
+          ++t_Counters.at(rec::Counter::maintenanceCalls);
         }
-        t_fdm->removeReadFD(exp.first);
       }
+
+      if (s_counter % 55 == 0) {
+        auto expired = t_fdm->getTimeouts(g_now);
+
+        for (const auto& exp : expired) {
+          auto conn = boost::any_cast<shared_ptr<TCPConnection>>(exp.second);
+          if (g_logCommonErrors) {
+            SLOG(g_log << Logger::Warning << "Timeout from remote TCP client " << conn->d_remote.toStringWithPort() << endl,
+                 g_slogtcpin->info(Logr::Warning, "Timeout from remote TCP client", "remote", Logging::Loggable(conn->d_remote)));
+          }
+          t_fdm->removeReadFD(exp.first);
+        }
+      }
+
+      s_counter++;
+
+      if (threadInfo.isHandler()) {
+        if (statsWanted || (s_statisticsInterval > 0 && (g_now.tv_sec - last_stat) >= s_statisticsInterval)) {
+          doStats();
+          last_stat = g_now.tv_sec;
+        }
+
+        Utility::gettimeofday(&g_now, nullptr);
+
+        if ((g_now.tv_sec - last_carbon) >= carbonInterval) {
+          g_multiTasker->makeThread(doCarbonDump, nullptr);
+          last_carbon = g_now.tv_sec;
+        }
+      }
+      runLuaMaintenance(threadInfo, last_lua_maintenance, luaMaintenanceInterval);
+
+      auto timeoutUsec = g_multiTasker->nextWaiterDelayUsec(500000);
+      t_fdm->run(&g_now, static_cast<int>(timeoutUsec / 1000));
+      // 'run' updates g_now for us
+
+      runTCPMaintenance(threadInfo, listenOnTCP, maxTcpClients);
     }
-
-    s_counter++;
-
-    if (threadInfo.isHandler()) {
-      if (statsWanted || (s_statisticsInterval > 0 && (g_now.tv_sec - last_stat) >= s_statisticsInterval)) {
-        doStats();
-        last_stat = g_now.tv_sec;
-      }
-
-      Utility::gettimeofday(&g_now, nullptr);
-
-      if ((g_now.tv_sec - last_carbon) >= carbonInterval) {
-        g_multiTasker->makeThread(doCarbonDump, nullptr);
-        last_carbon = g_now.tv_sec;
-      }
+    catch (const PDNSException& pdnsException) {
+      s_rateLimitedLogger.log(g_slog->withName("runtime"), "recLoop", pdnsException);
     }
-    runLuaMaintenance(threadInfo, last_lua_maintenance, luaMaintenanceInterval);
-
-    t_fdm->run(&g_now);
-    // 'run' updates g_now for us
-
-    runTCPMaintenance(threadInfo, listenOnTCP, maxTcpClients);
+    catch (const std::exception& stdException) {
+      s_rateLimitedLogger.log(g_slog->withName("runtime"), "recLoop", stdException);
+    }
+    catch (...) {
+      s_rateLimitedLogger.log(g_slog->withName("runtime"), "recLoop");
+    }
   }
 }
 
@@ -2668,12 +2854,6 @@ static void recursorThread()
       }
     }
 
-#ifdef NOD_ENABLED
-    if (threadInfo.isWorker()) {
-      setupNODThread(log);
-    }
-#endif /* NOD_ENABLED */
-
     /* the listener threads handle TCP queries */
     if (threadInfo.isWorker() || threadInfo.isListener()) {
       try {
@@ -2691,8 +2871,7 @@ static void recursorThread()
       }
     }
 
-    unsigned int ringsize = ::arg().asNum("stats-ringbuffer-entries") / RecThreadInfo::numWorkers();
-    if (ringsize != 0) {
+    if (unsigned int ringsize = ::arg().asNum("stats-ringbuffer-entries") / RecThreadInfo::numUDPWorkers(); ringsize != 0) {
       t_remotes = std::make_unique<addrringbuf_t>();
       if (RecThreadInfo::weDistributeQueries()) {
         t_remotes->set_capacity(::arg().asNum("stats-ringbuffer-entries") / RecThreadInfo::numDistributors());
@@ -2717,27 +2896,29 @@ static void recursorThread()
       t_bogusqueryring->set_capacity(ringsize);
     }
     g_multiTasker = std::make_unique<MT_t>(::arg().asNum("stack-size"), ::arg().asNum("stack-cache-size"));
-    threadInfo.mt = g_multiTasker.get();
+    threadInfo.setMT(g_multiTasker.get());
 
-    /* start protobuf export threads if needed */
-    auto luaconfsLocal = g_luaconfs.getLocal();
-    checkProtobufExport(luaconfsLocal);
-    checkOutgoingProtobufExport(luaconfsLocal);
+    {
+      /* start protobuf export threads if needed, don;'t keep a ref to lua config around */
+      auto luaconfsLocal = g_luaconfs.getLocal();
+      checkProtobufExport(luaconfsLocal);
+      checkOutgoingProtobufExport(luaconfsLocal);
 #ifdef HAVE_FSTRM
-    checkFrameStreamExport(luaconfsLocal, luaconfsLocal->frameStreamExportConfig, t_frameStreamServersInfo);
-    checkFrameStreamExport(luaconfsLocal, luaconfsLocal->nodFrameStreamExportConfig, t_nodFrameStreamServersInfo);
+      checkFrameStreamExport(luaconfsLocal, luaconfsLocal->frameStreamExportConfig, t_frameStreamServersInfo);
+      checkFrameStreamExport(luaconfsLocal, luaconfsLocal->nodFrameStreamExportConfig, t_nodFrameStreamServersInfo);
 #endif
+    }
 
     t_fdm = unique_ptr<FDMultiplexer>(getMultiplexer(log));
 
     std::unique_ptr<RecursorWebServer> rws;
 
-    t_fdm->addReadFD(threadInfo.pipes.readToThread, handlePipeRequest);
+    t_fdm->addReadFD(threadInfo.getPipes().readToThread, handlePipeRequest);
 
     if (threadInfo.isHandler()) {
       if (::arg().mustDo("webserver")) {
         SLOG(g_log << Logger::Warning << "Enabling web server" << endl,
-             log->info(Logr::Info, "Enabling web server"))
+             log->info(Logr::Info, "Enabling web server"));
         try {
           rws = make_unique<RecursorWebServer>(t_fdm.get());
         }
@@ -2751,18 +2932,18 @@ static void recursorThread()
            log->info(Logr::Info, "Enabled multiplexer", "name", Logging::Loggable(t_fdm->getName())));
     }
     else {
-      t_fdm->addReadFD(threadInfo.pipes.readQueriesToThread, handlePipeRequest);
+      t_fdm->addReadFD(threadInfo.getPipes().readQueriesToThread, handlePipeRequest);
 
       if (threadInfo.isListener()) {
         if (g_reusePort) {
           /* then every listener has its own FDs */
-          for (const auto& deferred : threadInfo.deferredAdds) {
+          for (const auto& deferred : threadInfo.getDeferredAdds()) {
             t_fdm->addReadFD(deferred.first, deferred.second);
           }
         }
         else {
           /* otherwise all listeners are listening on the same ones */
-          for (const auto& deferred : g_deferredAdds) {
+          for (const auto& deferred : threadInfo.isTCPListener() ? s_deferredTCPadds : s_deferredUDPadds) {
             t_fdm->addReadFD(deferred.first, deferred.second);
           }
         }
@@ -2784,13 +2965,13 @@ static void recursorThread()
 
     recLoop();
   }
-  catch (PDNSException& ae) {
+  catch (const PDNSException& ae) {
     SLOG(g_log << Logger::Error << "Exception: " << ae.reason << endl,
-         log->error(Logr::Error, ae.reason, "Exception in RecursorThread", "exception", Logging::Loggable("PDNSException")))
+         log->error(Logr::Error, ae.reason, "Exception in RecursorThread", "exception", Logging::Loggable("PDNSException")));
   }
-  catch (std::exception& e) {
+  catch (const std::exception& e) {
     SLOG(g_log << Logger::Error << "STL Exception: " << e.what() << endl,
-         log->error(Logr::Error, e.what(), "Exception in RecursorThread", "exception", Logging::Loggable("std::exception")))
+         log->error(Logr::Error, e.what(), "Exception in RecursorThread", "exception", Logging::Loggable("std::exception")));
   }
   catch (...) {
     SLOG(g_log << Logger::Error << "any other exception in main: " << endl,
@@ -2798,277 +2979,28 @@ static void recursorThread()
   }
 }
 
-static void initArgs()
+static pair<int, bool> doYamlConfig(int argc, char* argv[], const pdns::rust::settings::rec::Recursorsettings& settings) // NOLINT: Posix API
 {
-#if HAVE_FIBER_SANITIZER
-  // Asan needs more stack
-  ::arg().set("stack-size", "stack size per mthread") = "600000";
-#else
-  ::arg().set("stack-size", "stack size per mthread") = "200000";
-#endif
-  ::arg().set("stack-cache-size", "Size of the stack cache, per mthread") = "100";
-  // This mode forces metrics snap updates and disable root-refresh, to get consistent counters
-  ::arg().setSwitch("devonly-regression-test-mode", "internal use only") = "no";
-  ::arg().set("soa-minimum-ttl", "Don't change") = "0";
-  ::arg().set("no-shuffle", "Don't change") = "off";
-  ::arg().set("local-port", "port to listen on") = "53";
-  ::arg().set("local-address", "IP addresses to listen on, separated by spaces or commas. Also accepts ports.") = "127.0.0.1";
-  ::arg().setSwitch("non-local-bind", "Enable binding to non-local addresses by using FREEBIND / BINDANY socket options") = "no";
-  ::arg().set("trace", "if we should output heaps of logging. set to 'fail' to only log failing domains") = "off";
-  ::arg().set("dnssec", "DNSSEC mode: off/process-no-validate/process (default)/log-fail/validate") = "process";
-  ::arg().set("dnssec-log-bogus", "Log DNSSEC bogus validations") = "no";
-  ::arg().set("signature-inception-skew", "Allow the signature inception to be off by this number of seconds") = "60";
-  ::arg().set("dnssec-disabled-algorithms", "List of DNSSEC algorithm numbers that are considered unsupported") = "";
-  ::arg().set("daemon", "Operate as a daemon") = "no";
-  ::arg().setSwitch("write-pid", "Write a PID file") = "yes";
-  ::arg().set("loglevel", "Amount of logging. Higher is more. Do not set below 3") = "6";
-  ::arg().set("disable-syslog", "Disable logging to syslog, useful when running inside a supervisor that logs stdout") = "no";
-  ::arg().set("log-timestamp", "Print timestamps in log lines, useful to disable when running with a tool that timestamps stdout already") = "yes";
-  ::arg().set("log-common-errors", "If we should log rather common errors") = "no";
-  ::arg().set("chroot", "switch to chroot jail") = "";
-  ::arg().set("setgid", "If set, change group id to this gid for more security"
-#ifdef HAVE_SYSTEMD
-#define SYSTEMD_SETID_MSG ". When running inside systemd, use the User and Group settings in the unit-file!"
-              SYSTEMD_SETID_MSG
-#endif
-              )
-    = "";
-  ::arg().set("setuid", "If set, change user id to this uid for more security"
-#ifdef HAVE_SYSTEMD
-              SYSTEMD_SETID_MSG
-#endif
-              )
-    = "";
-  ::arg().set("network-timeout", "Wait this number of milliseconds for network i/o") = "1500";
-  ::arg().set("threads", "Launch this number of threads") = "2";
-  ::arg().set("distributor-threads", "Launch this number of distributor threads, distributing queries to other threads") = "0";
-  ::arg().set("processes", "Launch this number of processes (EXPERIMENTAL, DO NOT CHANGE)") = "1"; // if we un-experimental this, need to fix openssl rand seeding for multiple PIDs!
-  ::arg().set("config-name", "Name of this virtual configuration - will rename the binary image") = "";
-  ::arg().set("api-config-dir", "Directory where REST API stores config and zones") = "";
-  ::arg().set("api-key", "Static pre-shared authentication key for access to the REST API") = "";
-  ::arg().setSwitch("webserver", "Start a webserver (for REST API)") = "no";
-  ::arg().set("webserver-address", "IP Address of webserver to listen on") = "127.0.0.1";
-  ::arg().set("webserver-port", "Port of webserver to listen on") = "8082";
-  ::arg().set("webserver-password", "Password required for accessing the webserver") = "";
-  ::arg().set("webserver-allow-from", "Webserver access is only allowed from these subnets") = "127.0.0.1,::1";
-  ::arg().set("webserver-loglevel", "Amount of logging in the webserver (none, normal, detailed)") = "normal";
-  ::arg().setSwitch("webserver-hash-plaintext-credentials", "Whether to hash passwords and api keys supplied in plaintext, to prevent keeping the plaintext version in memory at runtime") = "no";
-  ::arg().set("carbon-ourname", "If set, overrides our reported hostname for carbon stats") = "";
-  ::arg().set("carbon-server", "If set, send metrics in carbon (graphite) format to this server IP address") = "";
-  ::arg().set("carbon-interval", "Number of seconds between carbon (graphite) updates") = "30";
-  ::arg().set("carbon-namespace", "If set overwrites the first part of the carbon string") = "pdns";
-  ::arg().set("carbon-instance", "If set overwrites the instance name default") = "recursor";
-
-  ::arg().set("statistics-interval", "Number of seconds between printing of recursor statistics, 0 to disable") = "1800";
-  ::arg().set("quiet", "Suppress logging of questions and answers") = "";
-  ::arg().set("logging-facility", "Facility to log messages as. 0 corresponds to local0") = "";
-  ::arg().set("config-dir", "Location of configuration directory (recursor.conf)") = SYSCONFDIR;
-  ::arg().set("socket-owner", "Owner of socket") = "";
-  ::arg().set("socket-group", "Group of socket") = "";
-  ::arg().set("socket-mode", "Permissions for socket") = "";
-
-  ::arg().set("socket-dir", string("Where the controlsocket will live, ") + LOCALSTATEDIR + "/pdns-recursor when unset and not chrooted"
-#ifdef HAVE_SYSTEMD
-                + ". Set to the RUNTIME_DIRECTORY environment variable when that variable has a value (e.g. under systemd).")
-    = "";
-  auto* runtimeDir = getenv("RUNTIME_DIRECTORY"); // NOLINT(concurrency-mt-unsafe,cppcoreguidelines-pro-type-vararg)
-  if (runtimeDir != nullptr) {
-    ::arg().set("socket-dir") = runtimeDir;
+  if (!::arg().mustDo("config")) {
+    return {0, false};
   }
-#else
-              )
-    = "";
-#endif
-  ::arg().set("query-local-address", "Source IP address for sending queries") = "0.0.0.0";
-  ::arg().set("client-tcp-timeout", "Timeout in seconds when talking to TCP clients") = "2";
-  ::arg().set("max-mthreads", "Maximum number of simultaneous Mtasker threads") = "2048";
-  ::arg().set("max-tcp-clients", "Maximum number of simultaneous TCP clients") = "128";
-  ::arg().set("max-concurrent-requests-per-tcp-connection", "Maximum number of requests handled concurrently per TCP connection") = "10";
-  ::arg().set("server-down-max-fails", "Maximum number of consecutive timeouts (and unreachables) to mark a server as down ( 0 => disabled )") = "64";
-  ::arg().set("server-down-throttle-time", "Number of seconds to throttle all queries to a server after being marked as down") = "60";
-  ::arg().set("dont-throttle-names", "Do not throttle nameservers with this name or suffix") = "";
-  ::arg().set("dont-throttle-netmasks", "Do not throttle nameservers with this IP netmask") = "";
-  ::arg().set("non-resolving-ns-max-fails", "Number of failed address resolves of a nameserver to start throttling it, 0 is disabled") = "5";
-  ::arg().set("non-resolving-ns-throttle-time", "Number of seconds to throttle a nameserver with a name failing to resolve") = "60";
-
-  ::arg().set("hint-file", "If set, load root hints from this file") = "";
-  ::arg().set("max-cache-entries", "If set, maximum number of entries in the main cache") = "1000000";
-  ::arg().set("max-negative-ttl", "maximum number of seconds to keep a negative cached entry in memory") = "3600";
-  ::arg().set("max-cache-bogus-ttl", "maximum number of seconds to keep a Bogus (positive or negative) cached entry in memory") = "3600";
-  ::arg().set("max-cache-ttl", "maximum number of seconds to keep a cached entry in memory") = "86400";
-  ::arg().set("packetcache-ttl", "maximum number of seconds to keep a cached entry in packetcache") = "86400";
-  ::arg().set("max-packetcache-entries", "maximum number of entries to keep in the packetcache") = "500000";
-  ::arg().set("packetcache-servfail-ttl", "maximum number of seconds to keep a cached servfail entry in packetcache") = "60";
-  ::arg().set("packetcache-negative-ttl", "maximum number of seconds to keep a cached NxDomain or NoData entry in packetcache") = "60";
-  ::arg().set("server-id", "Returned when queried for 'id.server' TXT or NSID, defaults to hostname, set custom or 'disabled'") = "";
-  ::arg().set("stats-ringbuffer-entries", "maximum number of packets to store statistics for") = "10000";
-  ::arg().set("version-string", "string reported on version.pdns or version.bind") = fullVersionString();
-  ::arg().set("allow-from", "If set, only allow these comma separated netmasks to recurse") = LOCAL_NETS;
-  ::arg().set("allow-from-file", "If set, load allowed netmasks from this file") = "";
-  ::arg().set("allow-notify-for", "If set, NOTIFY requests for these zones will be allowed") = "";
-  ::arg().set("allow-notify-for-file", "If set, load NOTIFY-allowed zones from this file") = "";
-  ::arg().set("allow-notify-from", "If set, NOTIFY requests from these comma separated netmasks will be allowed") = "";
-  ::arg().set("allow-notify-from-file", "If set, load NOTIFY-allowed netmasks from this file") = "";
-  ::arg().set("entropy-source", "If set, read entropy from this file") = "/dev/urandom";
-  ::arg().set("dont-query", "If set, do not query these netmasks for DNS data") = DONT_QUERY;
-  ::arg().set("max-tcp-per-client", "If set, maximum number of TCP sessions per client (IP address)") = "0";
-  ::arg().set("max-tcp-queries-per-connection", "If set, maximum number of TCP queries in a TCP connection") = "0";
-  ::arg().set("spoof-nearmiss-max", "If non-zero, assume spoofing after this many near misses") = "1";
-  ::arg().set("single-socket", "If set, only use a single socket for outgoing queries") = "off";
-  ::arg().set("auth-zones", "Zones for which we have authoritative data, comma separated domain=file pairs ") = "";
-  ::arg().set("lua-config-file", "More powerful configuration options") = "";
-  ::arg().setSwitch("allow-trust-anchor-query", "Allow queries for trustanchor.server CH TXT and negativetrustanchor.server CH TXT") = "no";
-
-  ::arg().set("forward-zones", "Zones for which we forward queries, comma separated domain=ip pairs") = "";
-  ::arg().set("forward-zones-recurse", "Zones for which we forward queries with recursion bit, comma separated domain=ip pairs") = "";
-  ::arg().set("forward-zones-file", "File with (+)domain=ip pairs for forwarding") = "";
-  ::arg().set("export-etc-hosts", "If we should serve up contents from /etc/hosts") = "off";
-  ::arg().set("export-etc-hosts-search-suffix", "Also serve up the contents of /etc/hosts with this suffix") = "";
-  ::arg().set("etc-hosts-file", "Path to 'hosts' file") = "/etc/hosts";
-  ::arg().set("serve-rfc1918", "If we should be authoritative for RFC 1918 private IP space") = "yes";
-  ::arg().set("lua-dns-script", "Filename containing an optional 'lua' script that will be used to modify dns answers") = "";
-  ::arg().set("lua-maintenance-interval", "Number of seconds between calls to the lua user defined maintenance() function") = "1";
-  ::arg().set("latency-statistic-size", "Number of latency values to calculate the qa-latency average") = "10000";
-  ::arg().setSwitch("disable-packetcache", "Disable packetcache") = "no";
-  ::arg().set("ecs-ipv4-bits", "Number of bits of IPv4 address to pass for EDNS Client Subnet") = "24";
-  ::arg().set("ecs-ipv4-cache-bits", "Maximum number of bits of IPv4 mask to cache ECS response") = "24";
-  ::arg().set("ecs-ipv6-bits", "Number of bits of IPv6 address to pass for EDNS Client Subnet") = "56";
-  ::arg().set("ecs-ipv6-cache-bits", "Maximum number of bits of IPv6 mask to cache ECS response") = "56";
-  ::arg().setSwitch("ecs-ipv4-never-cache", "If we should never cache IPv4 ECS responses") = "no";
-  ::arg().setSwitch("ecs-ipv6-never-cache", "If we should never cache IPv6 ECS responses") = "no";
-  ::arg().set("ecs-minimum-ttl-override", "The minimum TTL for records in ECS-specific answers") = "1";
-  ::arg().set("ecs-cache-limit-ttl", "Minimum TTL to cache ECS response") = "0";
-  ::arg().set("edns-subnet-whitelist", "List of netmasks and domains that we should enable EDNS subnet for (deprecated)") = "";
-  ::arg().set("edns-subnet-allow-list", "List of netmasks and domains that we should enable EDNS subnet for") = "";
-  ::arg().set("ecs-add-for", "List of client netmasks for which EDNS Client Subnet will be added") = "0.0.0.0/0, ::/0, " LOCAL_NETS_INVERSE;
-  ::arg().set("ecs-scope-zero-address", "Address to send to allow-listed authoritative servers for incoming queries with ECS prefix-length source of 0") = "";
-  ::arg().setSwitch("use-incoming-edns-subnet", "Pass along received EDNS Client Subnet information") = "no";
-  ::arg().setSwitch("pdns-distributes-queries", "If PowerDNS itself should distribute queries over threads") = "no";
-  ::arg().setSwitch("root-nx-trust", "If set, believe that an NXDOMAIN from the root means the TLD does not exist") = "yes";
-  ::arg().setSwitch("any-to-tcp", "Answer ANY queries with tc=1, shunting to TCP") = "no";
-  ::arg().setSwitch("lowercase-outgoing", "Force outgoing questions to lowercase") = "no";
-  ::arg().setSwitch("gettag-needs-edns-options", "If EDNS Options should be extracted before calling the gettag() hook") = "no";
-  ::arg().set("udp-truncation-threshold", "Maximum UDP response size before we truncate") = "1232";
-  ::arg().set("edns-outgoing-bufsize", "Outgoing EDNS buffer size") = "1232";
-  ::arg().set("minimum-ttl-override", "The minimum TTL") = "1";
-  ::arg().set("max-qperq", "Maximum outgoing queries per query") = "60";
-  ::arg().set("max-ns-per-resolve", "Maximum number of NS records to consider to resolve a name, 0 is no limit") = "13";
-  ::arg().set("max-ns-address-qperq", "Maximum outgoing NS address queries per query") = "10";
-  ::arg().set("max-total-msec", "Maximum total wall-clock time per query in milliseconds, 0 for unlimited") = "7000";
-  ::arg().set("max-recursion-depth", "Maximum number of internal recursion calls per query, 0 for unlimited") = "16";
-  ::arg().set("max-udp-queries-per-round", "Maximum number of UDP queries processed per recvmsg() round, before returning back to normal processing") = "10000";
-  ::arg().set("protobuf-use-kernel-timestamp", "Compute the latency of queries in protobuf messages by using the timestamp set by the kernel when the query was received (when available)") = "";
-  ::arg().set("distribution-pipe-buffer-size", "Size in bytes of the internal buffer of the pipe used by the distributor to pass incoming queries to a worker thread") = "0";
-
-  ::arg().set("include-dir", "Include *.conf files from this directory") = "";
-  ::arg().set("security-poll-suffix", "Domain name from which to query security update notifications") = "secpoll.powerdns.com.";
-
-#ifdef SO_REUSEPORT
-  ::arg().setSwitch("reuseport", "Enable SO_REUSEPORT allowing multiple recursors processes to listen to 1 address") = "yes";
-#else
-  ::arg().setSwitch("reuseport", "Enable SO_REUSEPORT allowing multiple recursors processes to listen to 1 address") = "no";
-#endif
-  ::arg().setSwitch("snmp-agent", "If set, register as an SNMP agent") = "no";
-  ::arg().set("snmp-master-socket", "If set and snmp-agent is set, the socket to use to register to the SNMP daemon (deprecated)") = "";
-  ::arg().set("snmp-daemon-socket", "If set and snmp-agent is set, the socket to use to register to the SNMP daemon") = "";
-
-  std::string defaultAPIDisabledStats = "cache-bytes, packetcache-bytes, special-memory-usage";
-  for (size_t idx = 0; idx < 32; idx++) {
-    defaultAPIDisabledStats += ", ecs-v4-response-bits-" + std::to_string(idx + 1);
+  const string config = ::arg()["config"];
+  if (config == "diff" || config.empty()) {
+    ::arg().parse(argc, argv);
+    ProxyMapping proxyMapping;
+    LuaConfigItems lci;
+    pdns::settings::rec::fromBridgeStructToLuaConfig(settings, lci, proxyMapping);
+    auto yaml = settings.to_yaml_string();
+    cout << yaml << endl;
   }
-  for (size_t idx = 0; idx < 128; idx++) {
-    defaultAPIDisabledStats += ", ecs-v6-response-bits-" + std::to_string(idx + 1);
+  else if (config == "default") {
+    auto yaml = pdns::settings::rec::defaultsToYaml();
+    cout << yaml << endl;
   }
-  std::string defaultDisabledStats = defaultAPIDisabledStats + ", cumul-clientanswers, cumul-authanswers, policy-hits, proxy-mapping-total, remote-logger-count";
-
-  ::arg().set("stats-api-blacklist", "List of statistics that are disabled when retrieving the complete list of statistics via the API (deprecated)") = defaultAPIDisabledStats;
-  ::arg().set("stats-carbon-blacklist", "List of statistics that are prevented from being exported via Carbon (deprecated)") = defaultDisabledStats;
-  ::arg().set("stats-rec-control-blacklist", "List of statistics that are prevented from being exported via rec_control get-all (deprecated)") = defaultDisabledStats;
-  ::arg().set("stats-snmp-blacklist", "List of statistics that are prevented from being exported via SNMP (deprecated)") = defaultDisabledStats;
-
-  ::arg().set("stats-api-disabled-list", "List of statistics that are disabled when retrieving the complete list of statistics via the API") = defaultAPIDisabledStats;
-  ::arg().set("stats-carbon-disabled-list", "List of statistics that are prevented from being exported via Carbon") = defaultDisabledStats;
-  ::arg().set("stats-rec-control-disabled-list", "List of statistics that are prevented from being exported via rec_control get-all") = defaultDisabledStats;
-  ::arg().set("stats-snmp-disabled-list", "List of statistics that are prevented from being exported via SNMP") = defaultDisabledStats;
-
-  ::arg().set("tcp-fast-open", "Enable TCP Fast Open support on the listening sockets, using the supplied numerical value as the queue size") = "0";
-  ::arg().set("tcp-fast-open-connect", "Enable TCP Fast Open support on outgoing sockets") = "no";
-  ::arg().set("nsec3-max-iterations", "Maximum number of iterations allowed for an NSEC3 record") = "150";
-
-  ::arg().set("cpu-map", "Thread to CPU mapping, space separated thread-id=cpu1,cpu2..cpuN pairs") = "";
-
-  ::arg().setSwitch("log-rpz-changes", "Log additions and removals to RPZ zones at Info level") = "no";
-
-  ::arg().set("proxy-protocol-from", "A Proxy Protocol header is only allowed from these subnets") = "";
-  ::arg().set("proxy-protocol-maximum-size", "The maximum size of a proxy protocol payload, including the TLV values") = "512";
-
-  ::arg().set("dns64-prefix", "DNS64 prefix") = "";
-
-  ::arg().set("udp-source-port-min", "Minimum UDP port to bind on") = "1024";
-  ::arg().set("udp-source-port-max", "Maximum UDP port to bind on") = "65535";
-  ::arg().set("udp-source-port-avoid", "List of comma separated UDP port number to avoid") = "11211";
-  ::arg().set("rng", "Specify random number generator to use. Valid values are auto,sodium,openssl,getrandom,arc4random,urandom.") = "auto";
-  ::arg().set("public-suffix-list-file", "Path to the Public Suffix List file, if any") = "";
-  ::arg().set("distribution-load-factor", "The load factor used when PowerDNS is distributing queries to worker threads") = "0.0";
-
-  ::arg().setSwitch("qname-minimization", "Use Query Name Minimization") = "yes";
-  ::arg().setSwitch("nothing-below-nxdomain", "When an NXDOMAIN exists in cache for a name with fewer labels than the qname, send NXDOMAIN without doing a lookup (see RFC 8020)") = "dnssec";
-  ::arg().set("max-generate-steps", "Maximum number of $GENERATE steps when loading a zone from a file") = "0";
-  ::arg().set("max-include-depth", "Maximum nested $INCLUDE depth when loading a zone from a file") = "20";
-
-  ::arg().set("record-cache-shards", "Number of shards in the record cache") = "1024";
-  ::arg().set("packetcache-shards", "Number of shards in the packet cache") = "1024";
-
-  ::arg().set("refresh-on-ttl-perc", "If a record is requested from the cache and only this % of original TTL remains, refetch") = "0";
-  ::arg().set("record-cache-locked-ttl-perc", "Replace records in record cache only after this % of original TTL has passed") = "0";
-
-  ::arg().set("x-dnssec-names", "Collect DNSSEC statistics for names or suffixes in this list in separate x-dnssec counters") = "";
-
-#ifdef NOD_ENABLED
-  ::arg().set("new-domain-tracking", "Track newly observed domains (i.e. never seen before).") = "no";
-  ::arg().set("new-domain-log", "Log newly observed domains.") = "yes";
-  ::arg().set("new-domain-lookup", "Perform a DNS lookup newly observed domains as a subdomain of the configured domain") = "";
-  ::arg().set("new-domain-history-dir", "Persist new domain tracking data here to persist between restarts") = string(NODCACHEDIR) + "/nod";
-  ::arg().set("new-domain-whitelist", "List of domains (and implicitly all subdomains) which will never be considered a new domain (deprecated)") = "";
-  ::arg().set("new-domain-ignore-list", "List of domains (and implicitly all subdomains) which will never be considered a new domain") = "";
-  ::arg().set("new-domain-db-size", "Size of the DB used to track new domains in terms of number of cells. Defaults to 67108864") = "67108864";
-  ::arg().set("new-domain-pb-tag", "If protobuf is configured, the tag to use for messages containing newly observed domains. Defaults to 'pdns-nod'") = "pdns-nod";
-  ::arg().set("unique-response-tracking", "Track unique responses (tuple of query name, type and RR).") = "no";
-  ::arg().set("unique-response-log", "Log unique responses") = "yes";
-  ::arg().set("unique-response-history-dir", "Persist unique response tracking data here to persist between restarts") = string(NODCACHEDIR) + "/udr";
-  ::arg().set("unique-response-db-size", "Size of the DB used to track unique responses in terms of number of cells. Defaults to 67108864") = "67108864";
-  ::arg().set("unique-response-pb-tag", "If protobuf is configured, the tag to use for messages containing unique DNS responses. Defaults to 'pdns-udr'") = "pdns-udr";
-#endif /* NOD_ENABLED */
-
-  ::arg().setSwitch("extended-resolution-errors", "If set, send an EDNS Extended Error extension on resolution failures, like DNSSEC validation errors") = "no";
-
-  ::arg().set("aggressive-nsec-cache-size", "The number of records to cache in the aggressive cache. If set to a value greater than 0, and DNSSEC processing or validation is enabled, the recursor will cache NSEC and NSEC3 records to generate negative answers, as defined in rfc8198") = "100000";
-  ::arg().set("aggressive-cache-min-nsec3-hit-ratio", "The minimum expected hit ratio to store NSEC3 records into the aggressive cache") = "2000";
-
-  ::arg().set("edns-padding-from", "List of netmasks (proxy IP in case of proxy-protocol presence, client IP otherwise) for which EDNS padding will be enabled in responses, provided that 'edns-padding-mode' applies") = "";
-  ::arg().set("edns-padding-mode", "Whether to add EDNS padding to all responses ('always') or only to responses for queries containing the EDNS padding option ('padded-queries-only', the default). In both modes, padding will only be added to responses for queries coming from `edns-padding-from`_ sources") = "padded-queries-only";
-  ::arg().set("edns-padding-tag", "Packetcache tag associated to responses sent with EDNS padding, to prevent sending these to clients for which padding is not enabled.") = "7830";
-  ::arg().setSwitch("edns-padding-out", "Whether to add EDNS padding to outgoing DoT messages") = "yes";
-
-  ::arg().setSwitch("dot-to-port-853", "Force DoT connection to target port 853 if DoT compiled in") = "yes";
-  ::arg().set("dot-to-auth-names", "Use DoT to authoritative servers with these names or suffixes") = "";
-  ::arg().set("event-trace-enabled", "If set, event traces are collected and send out via protobuf logging (1), logfile (2) or both(3)") = "0";
-
-  ::arg().set("tcp-out-max-idle-ms", "Time TCP/DoT connections are left idle in milliseconds or 0 if no limit") = "10000";
-  ::arg().set("tcp-out-max-idle-per-auth", "Maximum number of idle TCP/DoT connections to a specific IP per thread, 0 means do not keep idle connections open") = "10";
-  ::arg().set("tcp-out-max-queries", "Maximum total number of queries per TCP/DoT connection, 0 means no limit") = "0";
-  ::arg().set("tcp-out-max-idle-per-thread", "Maximum number of idle TCP/DoT connections per thread") = "100";
-  ::arg().setSwitch("structured-logging", "Prefer structured logging") = "yes";
-  ::arg().set("structured-logging-backend", "Structured logging backend") = "default";
-  ::arg().setSwitch("save-parent-ns-set", "Save parent NS set to be used if child NS set fails") = "yes";
-  ::arg().set("max-busy-dot-probes", "Maximum number of concurrent DoT probes") = "0";
-  ::arg().set("serve-stale-extensions", "Number of times a record's ttl is extended by 30s to be served stale") = "0";
-
-  ::arg().setCmd("help", "Provide a helpful message");
-  ::arg().setCmd("version", "Print version string");
-  ::arg().setCmd("config", "Output blank configuration. You can use --config=check to test the config file and command line arguments.");
-  ::arg().setDefaults();
-  g_log.toConsole(Logger::Info);
+  else if (config == "check") {
+    // Kinda redundant, if we came here we already read and checked the config....x
+  }
+  return {0, true};
 }
 
 static pair<int, bool> doConfig(Logr::log_t startupLog, const string& configname, int argc, char* argv[]) // NOLINT: Posix API
@@ -3077,7 +3009,7 @@ static pair<int, bool> doConfig(Logr::log_t startupLog, const string& configname
     string config = ::arg()["config"];
     if (config == "check") {
       try {
-        if (!::arg().file(configname.c_str())) {
+        if (!::arg().file(configname)) {
           SLOG(g_log << Logger::Warning << "Unable to open configuration file '" << configname << "'" << endl,
                startupLog->error("No such file", "Unable to open configuration file", "config_file", Logging::Loggable(configname)));
           return {1, true};
@@ -3095,7 +3027,7 @@ static pair<int, bool> doConfig(Logr::log_t startupLog, const string& configname
       cout << ::arg().configstring(false, true);
     }
     else if (config == "diff") {
-      if (!::arg().laxFile(configname.c_str())) {
+      if (!::arg().laxFile(configname)) {
         SLOG(g_log << Logger::Warning << "Unable to open configuration file '" << configname << "'" << endl,
              startupLog->error("No such file", "Unable to open configuration file", "config_file", Logging::Loggable(configname)));
         return {1, true};
@@ -3104,7 +3036,7 @@ static pair<int, bool> doConfig(Logr::log_t startupLog, const string& configname
       cout << ::arg().configstring(true, false);
     }
     else {
-      if (!::arg().laxFile(configname.c_str())) {
+      if (!::arg().laxFile(configname)) {
         SLOG(g_log << Logger::Warning << "Unable to open configuration file '" << configname << "'" << endl,
              startupLog->error("No such file", "Unable to open configuration file", "config_file", Logging::Loggable(configname)));
         return {1, true};
@@ -3115,6 +3047,93 @@ static pair<int, bool> doConfig(Logr::log_t startupLog, const string& configname
     return {0, true};
   }
   return {0, false};
+}
+
+LockGuarded<pdns::rust::settings::rec::Recursorsettings> g_yamlStruct;
+
+static void handleRuntimeDefaults(Logr::log_t log)
+{
+#ifdef HAVE_FIBER_SANITIZER
+  // Asan needs more stack
+  if (::arg().asNum("stack-size") == 200000) { // the default in table.py
+    ::arg().set("stack-size", "stack size per mthread") = "600000";
+  }
+#endif
+
+  const string RUNTIME = "*runtime determined*";
+  if (::arg()["version-string"] == RUNTIME) { // i.e. not set explicitly
+    ::arg().set("version-string") = fullVersionString();
+  }
+
+  if (::arg()["server-id"] == RUNTIME) { // i.e. not set explicitly
+    auto myHostname = getHostname();
+    if (!myHostname.has_value()) {
+      SLOG(g_log << Logger::Warning << "Unable to get the hostname, NSID and id.server values will be empty" << endl,
+           log->info(Logr::Warning, "Unable to get the hostname, NSID and id.server values will be empty"));
+    }
+    ::arg().set("server-id") = myHostname.has_value() ? *myHostname : "";
+  }
+
+  if (::arg()["socket-dir"].empty()) {
+    auto* runtimeDir = getenv("RUNTIME_DIRECTORY"); // NOLINT(concurrency-mt-unsafe,cppcoreguidelines-pro-type-vararg)
+    if (runtimeDir != nullptr) {
+      ::arg().set("socket-dir") = runtimeDir;
+    }
+  }
+
+  if (::arg()["socket-dir"].empty()) {
+    if (::arg()["chroot"].empty()) {
+      ::arg().set("socket-dir") = std::string(LOCALSTATEDIR) + "/pdns-recursor";
+    }
+    else {
+      ::arg().set("socket-dir") = "/";
+    }
+  }
+
+  if (::arg().asNum("threads") == 1) {
+    if (::arg().mustDo("pdns-distributes-queries")) {
+      SLOG(g_log << Logger::Warning << "Only one thread, no need to distribute queries ourselves" << endl,
+           log->info(Logr::Warning, "Only one thread, no need to distribute queries ourselves"));
+      ::arg().set("pdns-distributes-queries") = "no";
+    }
+  }
+
+  if (::arg().mustDo("pdns-distributes-queries") && ::arg().asNum("distributor-threads") == 0) {
+    SLOG(g_log << Logger::Warning << "Asked to run with pdns-distributes-queries set but no distributor threads, raising to 1" << endl,
+         log->info(Logr::Warning, "Asked to run with pdns-distributes-queries set but no distributor threads, raising to 1"));
+    ::arg().set("distributor-threads") = "1";
+  }
+
+  if (!::arg().mustDo("pdns-distributes-queries") && ::arg().asNum("distributor-threads") > 0) {
+    SLOG(g_log << Logger::Warning << "Not distributing queries, setting distributor threads to 0" << endl,
+         log->info(Logr::Warning, "Not distributing queries, setting distributor threads to 0"));
+    ::arg().set("distributor-threads") = "0";
+  }
+}
+
+static void setupLogging(const string& logname)
+{
+  if (logname == "systemd-journal") {
+#ifdef HAVE_SYSTEMD
+    if (int fileDesc = sd_journal_stream_fd("pdns-recusor", LOG_DEBUG, 0); fileDesc >= 0) {
+      g_slog = Logging::Logger::create(loggerSDBackend);
+      close(fileDesc);
+    }
+#endif
+    if (g_slog == nullptr) {
+      cerr << "Requested structured logging to systemd-journal, but it is not available" << endl;
+    }
+  }
+  else if (logname == "json") {
+    g_slog = Logging::Logger::create(loggerJSONBackend);
+    if (g_slog == nullptr) {
+      cerr << "JSON logging requested but it is not available" << endl;
+    }
+  }
+
+  if (g_slog == nullptr) {
+    g_slog = Logging::Logger::create(loggerBackend);
+  }
 }
 
 int main(int argc, char** argv)
@@ -3128,7 +3147,9 @@ int main(int argc, char** argv)
   int ret = EXIT_SUCCESS;
 
   try {
-    initArgs();
+    pdns::settings::rec::defineOldStyleSettings();
+    ::arg().setDefaults();
+    g_log.toConsole(Logger::Info);
     ::arg().laxParse(argc, argv); // do a lax parse
 
     if (::arg().mustDo("version")) {
@@ -3146,21 +3167,22 @@ int main(int argc, char** argv)
     // Pick up options given on command line to setup logging asap.
     g_quiet = ::arg().mustDo("quiet");
     s_logUrgency = (Logger::Urgency)::arg().asNum("loglevel");
-    g_slogStructured = ::arg().mustDo("structured-logging");
     s_structured_logger_backend = ::arg()["structured-logging-backend"];
 
-    if (s_logUrgency < Logger::Error) {
-      s_logUrgency = Logger::Error;
-    }
     if (!g_quiet && s_logUrgency < Logger::Info) { // Logger::Info=6, Logger::Debug=7
       s_logUrgency = Logger::Info; // if you do --quiet=no, you need Info to also see the query log
     }
     g_log.setLoglevel(s_logUrgency);
     g_log.toConsole(s_logUrgency);
+    showProductVersion();
+    if (!::arg().mustDo("structured-logging")) {
+      g_log << Logger::Error << "Disabling structured logging is not supported anymore" << endl;
+    }
 
-    string configname = ::arg()["config-dir"] + "/recursor.conf";
+    g_yamlSettings = false;
+    string configname = ::arg()["config-dir"] + "/recursor";
     if (!::arg()["config-name"].empty()) {
-      configname = ::arg()["config-dir"] + "/recursor-" + ::arg()["config-name"] + ".conf";
+      configname = ::arg()["config-dir"] + "/recursor-" + ::arg()["config-name"];
       g_programname += "-" + ::arg()["config-name"];
     }
     cleanSlashes(configname);
@@ -3183,21 +3205,7 @@ int main(int argc, char** argv)
       return 99;
     }
 
-    if (s_structured_logger_backend == "systemd-journal") {
-#ifdef HAVE_SYSTEMD
-      if (int fd = sd_journal_stream_fd("pdns-recusor", LOG_DEBUG, 0); fd >= 0) {
-        g_slog = Logging::Logger::create(loggerSDBackend);
-        close(fd);
-      }
-#endif
-      if (g_slog == nullptr) {
-        cerr << "Structured logging to systemd-journal requested but it is not available" << endl;
-      }
-    }
-
-    if (g_slog == nullptr) {
-      g_slog = Logging::Logger::create(loggerBackend);
-    }
+    setupLogging(s_structured_logger_backend);
 
     // Missing: a mechanism to call setVerbosity(x)
     auto startupLog = g_slog->withName("config");
@@ -3207,23 +3215,52 @@ int main(int argc, char** argv)
 
     ::arg().setSLog(startupLog);
 
-    bool mustExit = false;
-    std::tie(ret, mustExit) = doConfig(startupLog, configname, argc, argv);
-    if (ret != 0 || mustExit) {
-      return ret;
+    string yamlconfigname;
+    pdns::rust::settings::rec::Recursorsettings settings;
+    pdns::settings::rec::YamlSettingsStatus yamlstatus{};
+
+    for (const string suffix : {".yml", ".conf"}) {
+      yamlconfigname = configname + suffix;
+      yamlstatus = pdns::settings::rec::tryReadYAML(yamlconfigname, true, g_yamlSettings, g_luaSettingsInYAML, settings, startupLog);
+      if (yamlstatus == pdns::settings::rec::YamlSettingsStatus::OK) {
+        g_yamlSettingsSuffix = suffix;
+        break;
+      }
+      if (suffix == ".yml" && yamlstatus == pdns::settings::rec::PresentButFailed) {
+        return 1;
+      }
     }
 
-    if (!::arg().file(configname.c_str())) {
-      SLOG(g_log << Logger::Warning << "Unable to open configuration file '" << configname << "'" << endl,
-           startupLog->error("No such file", "Unable to open configuration file", "config_file", Logging::Loggable(configname)));
+    if (g_yamlSettings) {
+      bool mustExit = false;
+      std::tie(ret, mustExit) = doYamlConfig(argc, argv, settings);
+      if (ret != 0 || mustExit) {
+        return ret;
+      }
+    }
+    if (yamlstatus == pdns::settings::rec::YamlSettingsStatus::OK) {
+      auto lock = g_yamlStruct.lock();
+      *lock = std::move(settings);
+    }
+    else {
+      configname += ".conf";
+      startupLog->info(Logr::Warning, "Trying to read YAML from .yml or .conf failed, failing back to old-style config read", "configname", Logging::Loggable(configname));
+      bool mustExit = false;
+      std::tie(ret, mustExit) = doConfig(startupLog, configname, argc, argv);
+      if (ret != 0 || mustExit) {
+        return ret;
+      }
+      if (!::arg().file(configname)) {
+        SLOG(g_log << Logger::Warning << "Unable to open configuration file '" << configname << "'" << endl,
+             startupLog->error("No such file", "Unable to open configuration file", "config_file", Logging::Loggable(configname)));
+      }
     }
 
-    // Reparse, now with config file as well
+    // Reparse, now with config file as well, both for old-style as for YAML settings
     ::arg().parse(argc, argv);
 
     g_quiet = ::arg().mustDo("quiet");
     s_logUrgency = (Logger::Urgency)::arg().asNum("loglevel");
-    g_slogStructured = ::arg().mustDo("structured-logging");
 
     if (s_logUrgency < Logger::Error) {
       s_logUrgency = Logger::Error;
@@ -3240,31 +3277,16 @@ int main(int argc, char** argv)
       return EXIT_FAILURE;
     }
 
-    if (::arg()["socket-dir"].empty()) {
-      if (::arg()["chroot"].empty()) {
-        ::arg().set("socket-dir") = std::string(LOCALSTATEDIR) + "/pdns-recursor";
-      }
-      else {
-        ::arg().set("socket-dir") = "/";
-      }
-    }
+    handleRuntimeDefaults(startupLog);
 
-    if (::arg().asNum("threads") == 1) {
-      if (::arg().mustDo("pdns-distributes-queries")) {
-        SLOG(g_log << Logger::Warning << "Asked to run with pdns-distributes-queries set but no distributor threads, raising to 1" << endl,
-             startupLog->v(1)->info("Only one thread, no need to distribute queries ourselves"));
-        ::arg().set("pdns-distributes-queries") = "no";
+    if (auto ttl = ::arg().asNum("system-resolver-ttl"); ttl != 0) {
+      time_t interval = ttl;
+      if (::arg().asNum("system-resolver-interval") != 0) {
+        interval = ::arg().asNum("system-resolver-interval");
       }
-    }
-
-    if (::arg().mustDo("pdns-distributes-queries") && ::arg().asNum("distributor-threads") <= 0) {
-      SLOG(g_log << Logger::Warning << "Asked to run with pdns-distributes-queries set but no distributor threads, raising to 1" << endl,
-           startupLog->v(1)->info("Asked to run with pdns-distributes-queries set but no distributor threads, raising to 1"));
-      ::arg().set("distributor-threads") = "1";
-    }
-
-    if (!::arg().mustDo("pdns-distributes-queries")) {
-      ::arg().set("distributor-threads") = "0";
+      bool selfResolveCheck = ::arg().mustDo("system-resolver-self-resolve-check");
+      // Cannot use SyncRes::s_serverID, it is not set yet
+      pdns::RecResolve::setInstanceParameters(arg()["server-id"], ttl, interval, selfResolveCheck, []() { reloadZoneConfiguration(g_yamlSettings); });
     }
 
     g_recCache = std::make_unique<MemRecursorCache>(::arg().asNum("record-cache-shards"));
@@ -3351,10 +3373,10 @@ static string* pleaseUseNewTraceRegex(const std::string& newRegex, int file)
     }
     t_traceRegex = std::make_shared<Regex>(newRegex);
     t_tracefd = file;
-    return new string("ok\n");
+    return new string("ok\n"); // NOLINT(cppcoreguidelines-owning-memory): it's the API
   }
   catch (const PDNSException& ae) {
-    return new string(ae.reason + "\n");
+    return new string(ae.reason + "\n"); // NOLINT(cppcoreguidelines-owning-memory): it's the API
   }
 }
 
@@ -3387,4 +3409,132 @@ struct WipeCacheResult wipeCaches(const DNSName& canon, bool subtree, uint16_t q
   }
 
   return res;
+}
+
+void startLuaConfigDelayedThreads(const vector<RPZTrackerParams>& rpzs, uint64_t generation)
+{
+  for (const auto& rpzPrimary : rpzs) {
+    if (rpzPrimary.primaries.empty()) {
+      continue;
+    }
+    try {
+      // RPZIXTracker uses call by value for its args. That is essential, since we want copies so
+      // that RPZIXFRTracker gets values with the proper lifetime.
+      std::thread theThread(RPZIXFRTracker, rpzPrimary, generation);
+      theThread.detach();
+    }
+    catch (const std::exception& e) {
+      SLOG(g_log << Logger::Error << "Problem starting RPZIXFRTracker thread: " << e.what() << endl,
+           g_slog->withName("rpz")->error(Logr::Error, e.what(), "Exception starting RPZIXFRTracker thread", "exception", Logging::Loggable("std::exception")));
+      exit(1); // NOLINT(concurrency-mt-unsafe)
+    }
+    catch (const PDNSException& e) {
+      SLOG(g_log << Logger::Error << "Problem starting RPZIXFRTracker thread: " << e.reason << endl,
+           g_slog->withName("rpz")->error(Logr::Error, e.reason, "Exception starting RPZIXFRTracker thread", "exception", Logging::Loggable("PDNSException")));
+      exit(1); // NOLINT(concurrency-mt-unsafe)
+    }
+  }
+}
+
+static void activateRPZFile(const RPZTrackerParams& params, LuaConfigItems& lci, shared_ptr<DNSFilterEngine::Zone>& zone)
+{
+  auto log = lci.d_slog->withValues("file", Logging::Loggable(params.name));
+
+  zone->setName(params.polName);
+  try {
+    SLOG(g_log << Logger::Warning << "Loading RPZ from file '" << params.name << "'" << endl,
+         log->info(Logr::Info, "Loading RPZ from file"));
+    loadRPZFromFile(params.name, zone, params.defpol, params.defpolOverrideLocal, params.maxTTL);
+    SLOG(g_log << Logger::Warning << "Done loading RPZ from file '" << params.name << "'" << endl,
+         log->info(Logr::Info, "Done loading RPZ from file"));
+  }
+  catch (const std::exception& e) {
+    SLOG(g_log << Logger::Error << "Unable to load RPZ zone from '" << params.name << "': " << e.what() << endl,
+         log->error(Logr::Error, e.what(), "Exception while loading RPZ zone from file"));
+  }
+}
+
+static void activateRPZPrimary(RPZTrackerParams& params, LuaConfigItems& lci, shared_ptr<DNSFilterEngine::Zone>& zone, const DNSName& domain)
+{
+  auto log = lci.d_slog->withValues("seedfile", Logging::Loggable(params.seedFileName), "zone", Logging::Loggable(params.name));
+
+  if (!params.seedFileName.empty()) {
+    SLOG(g_log << Logger::Info << "Pre-loading RPZ zone " << params.name << " from seed file '" << params.seedFileName << "'" << endl,
+         log->info(Logr::Info, "Pre-loading RPZ zone from seed file"));
+    try {
+      params.soaRecordContent = loadRPZFromFile(params.seedFileName, zone, params.defpol, params.defpolOverrideLocal, params.maxTTL);
+
+      if (zone->getDomain() != domain) {
+        throw PDNSException("The RPZ zone " + params.name + " loaded from the seed file (" + zone->getDomain().toString() + ") does not match the one passed in parameter (" + domain.toString() + ")");
+      }
+
+      if (params.soaRecordContent == nullptr) {
+        throw PDNSException("The RPZ zone " + params.name + " loaded from the seed file (" + zone->getDomain().toString() + ") has no SOA record");
+      }
+    }
+    catch (const PDNSException& e) {
+      SLOG(g_log << Logger::Warning << "Unable to pre-load RPZ zone " << params.name << " from seed file '" << params.seedFileName << "': " << e.reason << endl,
+           log->error(Logr::Warning, e.reason, "Exception while pre-loading RPZ zone", "exception", Logging::Loggable("PDNSException")));
+      zone->clear();
+    }
+    catch (const std::exception& e) {
+      SLOG(g_log << Logger::Warning << "Unable to pre-load RPZ zone " << params.name << " from seed file '" << params.seedFileName << "': " << e.what() << endl,
+           log->error(Logr::Warning, e.what(), "Exception while pre-loading RPZ zone", "exception", Logging::Loggable("std::exception")));
+      zone->clear();
+    }
+  }
+}
+
+static void activateRPZs(LuaConfigItems& lci)
+{
+  for (auto& params : lci.rpzs) {
+    auto zone = std::make_shared<DNSFilterEngine::Zone>();
+    if (params.zoneSizeHint != 0) {
+      zone->reserve(params.zoneSizeHint);
+    }
+    if (!params.tags.empty()) {
+      std::unordered_set<std::string> tags;
+      for (const auto& tag : params.tags) {
+        tags.emplace(tag);
+      }
+      zone->setTags(tags);
+    }
+    zone->setPolicyOverridesGettag(params.defpolOverrideLocal);
+    if (params.extendedErrorCode != std::numeric_limits<uint32_t>::max()) {
+      zone->setExtendedErrorCode(params.extendedErrorCode);
+      if (!params.extendedErrorExtra.empty()) {
+        zone->setExtendedErrorExtra(params.extendedErrorExtra);
+      }
+    }
+    zone->setIncludeSOA(params.includeSOA);
+    zone->setIgnoreDuplicates(params.ignoreDuplicates);
+
+    if (params.primaries.empty()) {
+      activateRPZFile(params, lci, zone);
+      lci.dfe.addZone(zone);
+    }
+    else {
+      DNSName domain(params.name);
+      zone->setDomain(domain);
+      zone->setName(params.polName);
+      params.zoneIdx = lci.dfe.addZone(zone);
+      activateRPZPrimary(params, lci, zone, domain);
+    }
+  }
+}
+
+void activateLuaConfig(LuaConfigItems& lci)
+{
+  if (!lci.trustAnchorFileInfo.fname.empty()) {
+    warnIfDNSSECDisabled("Warning: reading Trust Anchors from file, but dnssec is set to 'off'!");
+    updateTrustAnchorsFromFile(lci.trustAnchorFileInfo.fname, lci.dsAnchors, lci.d_slog);
+  }
+  if (lci.dsAnchors.size() > rootDSs.size()) {
+    warnIfDNSSECDisabled("Warning: adding Trust Anchor for DNSSEC, but dnssec is set to 'off'!");
+  }
+  if (!lci.negAnchors.empty()) {
+    warnIfDNSSECDisabled("Warning: adding Negative Trust Anchor for DNSSEC, but dnssec is set to 'off'!");
+  }
+  activateRPZs(lci);
+  g_luaconfs.setState(lci);
 }

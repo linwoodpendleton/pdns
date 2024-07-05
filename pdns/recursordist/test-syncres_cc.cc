@@ -1,4 +1,7 @@
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #include <boost/test/unit_test.hpp>
 
 #include "aggressive_nsec.hh"
@@ -7,6 +10,7 @@
 #include "root-dnssec.hh"
 #include "rec-taskqueue.hh"
 #include "test-syncres_cc.hh"
+#include "recpacketcache.hh"
 
 GlobalStateHolder<LuaConfigItems> g_luaconfs;
 GlobalStateHolder<SuffixMatchNode> g_xdnssec;
@@ -16,10 +20,8 @@ GlobalStateHolder<SuffixMatchNode> g_DoTToAuthNames;
 std::unique_ptr<MemRecursorCache> g_recCache;
 std::unique_ptr<NegCache> g_negCache;
 bool g_lowercaseOutgoing = false;
-#if 0
-pdns::TaskQueue g_test_tasks;
-pdns::TaskQueue g_resolve_tasks;
-#endif
+unsigned int g_networkTimeoutMsec = 1500;
+
 /* Fake some required functions we didn't want the trouble to
    link with */
 ArgvMap& arg()
@@ -62,7 +64,7 @@ void RecursorLua4::getFeatures(Features& /* features */)
 {
 }
 
-LWResult::Result asyncresolve(const ComboAddress& /* ip */, const DNSName& /* domain */, int /* type */, bool /* doTCP */, bool /* sendRDQuery */, int /* EDNS0Level */, struct timeval* /* now */, boost::optional<Netmask>& /* srcmask */, boost::optional<const ResolveContext&> /* context */, const std::shared_ptr<std::vector<std::unique_ptr<RemoteLogger>>>& /* outgoingLoggers */, const std::shared_ptr<std::vector<std::unique_ptr<FrameStreamLogger>>>& /* fstrmLoggers */, const std::set<uint16_t>& /* exportTypes */, LWResult* /* res */, bool* /* chained */)
+LWResult::Result asyncresolve(const ComboAddress& /* ip */, const DNSName& /* domain */, int /* type */, bool /* doTCP */, bool /* sendRDQuery */, int /* EDNS0Level */, struct timeval* /* now */, boost::optional<Netmask>& /* srcmask */, const ResolveContext& /* context */, const std::shared_ptr<std::vector<std::unique_ptr<RemoteLogger>>>& /* outgoingLoggers */, const std::shared_ptr<std::vector<std::unique_ptr<FrameStreamLogger>>>& /* fstrmLoggers */, const std::set<uint16_t>& /* exportTypes */, LWResult* /* res */, bool* /* chained */)
 {
   return LWResult::Result::Timeout;
 }
@@ -139,6 +141,7 @@ void initSR(bool debug)
     g_log.toConsole(Logger::Error);
   }
 
+  RecursorPacketCache::s_refresh_ttlperc = 0;
   MemRecursorCache::s_maxServedStaleExtensions = 0;
   NegCache::s_maxServedStaleExtensions = 0;
   g_recCache = std::make_unique<MemRecursorCache>();
@@ -181,6 +184,9 @@ void initSR(bool debug)
   SyncRes::s_save_parent_ns_set = true;
   SyncRes::s_maxnsperresolve = 13;
   SyncRes::s_locked_ttlperc = 0;
+  SyncRes::s_minimize_one_label = 4;
+  SyncRes::s_max_minimize_count = 10;
+  SyncRes::s_max_CNAMES_followed = 10;
 
   SyncRes::clearNSSpeeds();
   BOOST_CHECK_EQUAL(SyncRes::getNSSpeedsSize(), 0U);
@@ -326,9 +332,27 @@ bool addRRSIG(const testkeysset_t& keys, std::vector<DNSRecord>& records, const 
     throw std::runtime_error("No DNSKEY found for " + signer.toLogString() + ", unable to compute the requested RRSIG");
   }
 
-  size_t recordsCount = records.size();
-  const DNSName& name = records[recordsCount - 1].d_name;
-  const uint16_t type = records[recordsCount - 1].d_type;
+  DNSName name;
+  uint16_t type{QType::ENT};
+  DNSResourceRecord::Place place{DNSResourceRecord::ANSWER};
+  uint32_t ttl{0};
+  bool found = false;
+
+  /* locate the last non-RRSIG record */
+  for (auto recordIterator = records.rbegin(); recordIterator != records.rend(); ++recordIterator) {
+    if (recordIterator->d_type != QType::RRSIG) {
+      name = recordIterator->d_name;
+      type = recordIterator->d_type;
+      place = recordIterator->d_place;
+      ttl = recordIterator->d_ttl;
+      found = true;
+      break;
+    }
+  }
+
+  if (!found) {
+    throw std::runtime_error("Unable to locate the record that the RRSIG should cover");
+  }
 
   sortedRecords_t recordcontents;
   for (const auto& record : records) {
@@ -338,16 +362,16 @@ bool addRRSIG(const testkeysset_t& keys, std::vector<DNSRecord>& records, const 
   }
 
   RRSIGRecordContent rrc;
-  computeRRSIG(it->second.first, signer, wildcard ? *wildcard : records[recordsCount - 1].d_name, records[recordsCount - 1].d_type, records[recordsCount - 1].d_ttl, sigValidity, rrc, recordcontents, algo, boost::none, now);
+  computeRRSIG(it->second.first, signer, wildcard ? *wildcard : name, type, ttl, sigValidity, rrc, recordcontents, algo, boost::none, now);
   if (broken) {
     rrc.d_signature[0] ^= 42;
   }
 
   DNSRecord rec;
   rec.d_type = QType::RRSIG;
-  rec.d_place = records[recordsCount - 1].d_place;
-  rec.d_name = records[recordsCount - 1].d_name;
-  rec.d_ttl = records[recordsCount - 1].d_ttl;
+  rec.d_place = place;
+  rec.d_name = name;
+  rec.d_ttl = ttl;
 
   rec.setContent(std::make_shared<RRSIGRecordContent>(rrc));
   records.push_back(rec);
@@ -470,7 +494,7 @@ void generateKeyMaterial(const DNSName& name, unsigned int algo, uint8_t digest,
   keys[name] = std::pair<DNSSECPrivateKey, DSRecordContent>(dpk, ds);
 }
 
-void generateKeyMaterial(const DNSName& name, unsigned int algo, uint8_t digest, testkeysset_t& keys, map<DNSName, dsmap_t>& dsAnchors)
+void generateKeyMaterial(const DNSName& name, unsigned int algo, uint8_t digest, testkeysset_t& keys, map<DNSName, dsset_t>& dsAnchors)
 {
   generateKeyMaterial(name, algo, digest, keys);
   dsAnchors[name].insert(keys[name].second);

@@ -125,7 +125,7 @@ struct DNSComboWriter
   };
   std::string d_query;
   std::unordered_set<std::string> d_policyTags;
-  const std::unordered_set<std::string> d_gettagPolicyTags;
+  std::unordered_set<std::string> d_gettagPolicyTags;
   std::string d_routingTag;
   std::vector<DNSRecord> d_records;
 
@@ -192,6 +192,8 @@ extern std::unique_ptr<RecursorPacketCache> g_packetCache;
 
 using RemoteLoggerStats_t = std::unordered_map<std::string, RemoteLoggerInterface::Stats>;
 
+extern bool g_yamlSettings;
+extern string g_yamlSettingsSuffix;
 extern bool g_logCommonErrors;
 extern size_t g_proxyProtocolMaximumSize;
 extern std::atomic<bool> g_quiet;
@@ -210,6 +212,8 @@ extern uint16_t g_udpTruncationThreshold;
 extern double g_balancingFactor;
 extern size_t g_maxUDPQueriesPerRound;
 extern bool g_useKernelTimestamp;
+extern bool g_allowNoRD;
+extern unsigned int g_maxChainLength;
 extern thread_local std::shared_ptr<NetmaskGroup> t_allowFrom;
 extern thread_local std::shared_ptr<NetmaskGroup> t_allowNotifyFrom;
 extern thread_local std::shared_ptr<notifyset_t> t_allowNotifyFor;
@@ -219,6 +223,7 @@ extern boost::optional<ComboAddress> g_dns64Prefix;
 extern DNSName g_dns64PrefixReverse;
 extern uint64_t g_latencyStatSize;
 extern NetmaskGroup g_proxyProtocolACL;
+extern std::set<ComboAddress> g_proxyProtocolExceptions;
 extern std::atomic<bool> g_statsWanted;
 extern uint32_t g_disthashseed;
 extern int g_argc;
@@ -241,12 +246,13 @@ extern bool g_nodEnabled;
 extern DNSName g_nodLookupDomain;
 extern bool g_nodLog;
 extern SuffixMatchNode g_nodDomainWL;
+extern SuffixMatchNode g_udrDomainWL;
 extern std::string g_nod_pbtag;
 extern bool g_udrEnabled;
 extern bool g_udrLog;
 extern std::string g_udr_pbtag;
-extern thread_local std::shared_ptr<nod::NODDB> t_nodDBp;
-extern thread_local std::shared_ptr<nod::UniqueResponseDB> t_udrDBp;
+extern std::unique_ptr<nod::NODDB> g_nodDBp;
+extern std::unique_ptr<nod::UniqueResponseDB> g_udrDBp;
 #endif
 
 struct ProtobufServersInfo
@@ -278,7 +284,6 @@ extern std::set<uint16_t> g_avoidUdpSourcePorts;
 
 /* without reuseport, all listeners share the same sockets */
 typedef vector<pair<int, std::function<void(int, boost::any&)>>> deferredAdd_t;
-extern deferredAdd_t g_deferredAdds;
 
 typedef map<ComboAddress, uint32_t, ComboAddress::addressOnlyLessThan> tcpClientCounts_t;
 extern thread_local std::unique_ptr<tcpClientCounts_t> t_tcpClientCounts;
@@ -345,9 +350,9 @@ public:
     return s_threadInfos.at(t_id);
   }
 
-  static RecThreadInfo& info(unsigned int i)
+  static RecThreadInfo& info(unsigned int index)
   {
-    return s_threadInfos.at(i);
+    return s_threadInfos.at(index);
   }
 
   static vector<RecThreadInfo>& infos()
@@ -355,7 +360,7 @@ public:
     return s_threadInfos;
   }
 
-  bool isDistributor() const
+  [[nodiscard]] bool isDistributor() const
   {
     if (t_id == 0) {
       return false;
@@ -363,7 +368,7 @@ public:
     return s_weDistributeQueries && listener;
   }
 
-  bool isHandler() const
+  [[nodiscard]] bool isHandler() const
   {
     if (t_id == 0) {
       return true;
@@ -371,17 +376,24 @@ public:
     return handler;
   }
 
-  bool isWorker() const
+  [[nodiscard]] bool isWorker() const
   {
     return worker;
   }
 
-  bool isListener() const
+  // UDP or TCP listener?
+  [[nodiscard]] bool isListener() const
   {
     return listener;
   }
 
-  bool isTaskThread() const
+  // A TCP-only listener?
+  [[nodiscard]] bool isTCPListener() const
+  {
+    return tcplistener;
+  }
+
+  [[nodiscard]] bool isTaskThread() const
   {
     return taskThread;
   }
@@ -401,6 +413,12 @@ public:
     listener = flag;
   }
 
+  void setTCPListener(bool flag = true)
+  {
+    setListener(flag);
+    tcplistener = flag;
+  }
+
   void setTaskThread()
   {
     taskThread = true;
@@ -411,12 +429,12 @@ public:
     return t_id;
   }
 
-  static void setThreadId(unsigned int id)
+  static void setThreadId(unsigned int arg)
   {
-    t_id = id;
+    t_id = arg;
   }
 
-  std::string getName() const
+  [[nodiscard]] std::string getName() const
   {
     return name;
   }
@@ -431,9 +449,14 @@ public:
     return 1;
   }
 
-  static unsigned int numWorkers()
+  static unsigned int numUDPWorkers()
   {
-    return s_numWorkerThreads;
+    return s_numUDPWorkerThreads;
+  }
+
+  static unsigned int numTCPWorkers()
+  {
+    return s_numTCPWorkerThreads;
   }
 
   static unsigned int numDistributors()
@@ -451,9 +474,14 @@ public:
     s_weDistributeQueries = flag;
   }
 
-  static void setNumWorkerThreads(unsigned int n)
+  static void setNumUDPWorkerThreads(unsigned int n)
   {
-    s_numWorkerThreads = n;
+    s_numUDPWorkerThreads = n;
+  }
+
+  static void setNumTCPWorkerThreads(unsigned int n)
+  {
+    s_numTCPWorkerThreads = n;
   }
 
   static void setNumDistributorThreads(unsigned int n)
@@ -463,17 +491,58 @@ public:
 
   static unsigned int numRecursorThreads()
   {
-    return numHandlers() + numDistributors() + numWorkers() + numTaskThreads();
+    return numHandlers() + numDistributors() + numUDPWorkers() + numTCPWorkers() + numTaskThreads();
   }
 
   static int runThreads(Logr::log_t);
   static void makeThreadPipes(Logr::log_t);
 
-  void setExitCode(int e)
+  void setExitCode(int n)
   {
-    exitCode = e;
+    exitCode = n;
   }
 
+  std::set<int>& getTCPSockets()
+  {
+    return tcpSockets;
+  }
+
+  void setTCPSockets(std::set<int>& socks)
+  {
+    tcpSockets = socks;
+  }
+
+  deferredAdd_t& getDeferredAdds()
+  {
+    return deferredAdds;
+  }
+
+  const ThreadPipeSet& getPipes() const
+  {
+    return pipes;
+  }
+
+  [[nodiscard]] uint64_t getNumberOfDistributedQueries() const
+  {
+    return numberOfDistributedQueries;
+  }
+
+  void incNumberOfDistributedQueries()
+  {
+    numberOfDistributedQueries++;
+  }
+
+  MT_t* getMT()
+  {
+    return mt;
+  }
+
+  void setMT(MT_t* theMT)
+  {
+    mt = theMT;
+  }
+
+private:
   // FD corresponding to TCP sockets this thread is listening on.
   // These FDs are also in deferredAdds when we have one socket per
   // listener, and in g_deferredAdds instead.
@@ -487,8 +556,7 @@ public:
   MT_t* mt{nullptr};
   uint64_t numberOfDistributedQueries{0};
 
-private:
-  void start(unsigned int id, const string& name, const std::map<unsigned int, std::set<int>>& cpusMap, Logr::log_t);
+  void start(unsigned int tid, const string& tname, const std::map<unsigned int, std::set<int>>& cpusMap, Logr::log_t);
 
   std::string name;
   std::thread thread;
@@ -498,6 +566,8 @@ private:
   bool handler{false};
   // accept incoming queries (and distributes them to the workers if pdns-distributes-queries is set)
   bool listener{false};
+  // accept incoming TCP queries (and distributes them to the workers if pdns-distributes-queries is set)
+  bool tcplistener{false};
   // process queries
   bool worker{false};
   // run async tasks: from TaskQueue and ZoneToCache
@@ -507,7 +577,8 @@ private:
   static std::vector<RecThreadInfo> s_threadInfos;
   static bool s_weDistributeQueries; // if true, 1 or more threads listen on the incoming query sockets and distribute them to workers
   static unsigned int s_numDistributorThreads;
-  static unsigned int s_numWorkerThreads;
+  static unsigned int s_numUDPWorkerThreads;
+  static unsigned int s_numTCPWorkerThreads;
 };
 
 struct ThreadMSG
@@ -543,7 +614,7 @@ void protobufLogResponse(const struct dnsheader* header, LocalStateHolder<LuaCon
                          const std::unordered_set<std::string>& policyTags);
 void requestWipeCaches(const DNSName& canon);
 void startDoResolve(void*);
-bool expectProxyProtocol(const ComboAddress& from);
+bool expectProxyProtocol(const ComboAddress& from, const ComboAddress& listenAddress);
 void finishTCPReply(std::unique_ptr<DNSComboWriter>&, bool hadError, bool updateInFlight);
 void checkFastOpenSysctl(bool active, Logr::log_t);
 void checkTFOconnect(Logr::log_t);
@@ -552,6 +623,10 @@ void handleNewTCPQuestion(int fileDesc, FDMultiplexer::funcparam_t&);
 
 void makeUDPServerSockets(deferredAdd_t& deferredAdds, Logr::log_t);
 string doTraceRegex(FDWrapper file, vector<string>::const_iterator begin, vector<string>::const_iterator end);
+extern bool g_luaSettingsInYAML;
+void startLuaConfigDelayedThreads(const vector<RPZTrackerParams>& rpzs, uint64_t generation);
+void activateLuaConfig(LuaConfigItems& lci);
+unsigned int authWaitTimeMSec(const std::unique_ptr<MT_t>& mtasker);
 
 #define LOCAL_NETS "127.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 169.254.0.0/16, 192.168.0.0/16, 172.16.0.0/12, ::1/128, fc00::/7, fe80::/10"
 #define LOCAL_NETS_INVERSE "!127.0.0.0/8, !10.0.0.0/8, !100.64.0.0/10, !169.254.0.0/16, !192.168.0.0/16, !172.16.0.0/12, !::1/128, !fc00::/7, !fe80::/10"

@@ -74,6 +74,8 @@ struct Stats
   stat_t securityStatus{0};
   stat_t dohQueryPipeFull{0};
   stat_t dohResponsePipeFull{0};
+  stat_t doqResponsePipeFull{0};
+  stat_t doh3ResponsePipeFull{0};
   stat_t outgoingDoHQueryPipeFull{0};
   stat_t proxyProtocolInvalid{0};
   stat_t tcpQueryPipeFull{0};
@@ -83,6 +85,8 @@ struct Stats
   double latencyTCPAvg100{0}, latencyTCPAvg1000{0}, latencyTCPAvg10000{0}, latencyTCPAvg1000000{0};
   double latencyDoTAvg100{0}, latencyDoTAvg1000{0}, latencyDoTAvg10000{0}, latencyDoTAvg1000000{0};
   double latencyDoHAvg100{0}, latencyDoHAvg1000{0}, latencyDoHAvg10000{0}, latencyDoHAvg1000000{0};
+  double latencyDoQAvg100{0}, latencyDoQAvg1000{0}, latencyDoQAvg10000{0}, latencyDoQAvg1000000{0};
+  double latencyDoH3Avg100{0}, latencyDoH3Avg1000{0}, latencyDoH3Avg10000{0}, latencyDoH3Avg1000000{0};
   using statfunction_t = std::function<uint64_t(const std::string&)>;
   using entry_t = std::variant<stat_t*, pdns::stat_t_trait<double>*, double*, statfunction_t>;
   struct EntryPair

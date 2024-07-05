@@ -24,7 +24,7 @@ uint64_t RecursorPacketCache::size() const
 {
   uint64_t count = 0;
   for (const auto& map : d_maps) {
-    count += map.d_entriesCount;
+    count += map.getEntriesCount();
   }
   return count;
 }
@@ -92,7 +92,7 @@ uint64_t RecursorPacketCache::doWipePacketCache(const DNSName& name, uint16_t qt
       }
       if (qtype == 0xffff || iter->d_type == qtype) {
         iter = idx.erase(iter);
-        map.d_entriesCount--;
+        map.decEntriesCount();
         count++;
       }
       else {
@@ -123,15 +123,20 @@ bool RecursorPacketCache::checkResponseMatches(MapCombo::LockedContent& shard, s
     }
 
     if (now < iter->d_ttd) { // it is right, it is fresh!
+      // coverity[store_truncates_time_t]
       *age = static_cast<uint32_t>(now - iter->d_creation);
       // we know ttl is > 0
       auto ttl = static_cast<uint32_t>(iter->d_ttd - now);
-      if (s_refresh_ttlperc > 0 && !iter->d_submitted) {
-        const uint32_t deadline = iter->getOrigTTL() * s_refresh_ttlperc / 100;
-        const bool almostExpired = ttl <= deadline;
-        if (almostExpired) {
-          iter->d_submitted = true;
-          pushAlmostExpiredTask(qname, qtype, iter->d_ttd, Netmask());
+      if (s_refresh_ttlperc > 0 && !iter->d_submitted && taskQTypeIsSupported(qtype)) {
+        const dnsheader_aligned header(iter->d_packet.data());
+        const auto* headerPtr = header.get();
+        if (headerPtr->rcode == RCode::NoError) {
+          const uint32_t deadline = iter->getOrigTTL() * s_refresh_ttlperc / 100;
+          const bool almostExpired = ttl <= deadline;
+          if (almostExpired) {
+            iter->d_submitted = true;
+            pushAlmostExpiredTask(qname, qtype, iter->d_ttd, Netmask());
+          }
         }
       }
       *responsePacket = iter->d_packet;
@@ -231,26 +236,26 @@ void RecursorPacketCache::insertResponsePacket(unsigned int tag, uint32_t qhash,
     return;
   }
 
-  struct Entry entry(qname, qtype, qclass, std::move(responsePacket), std::move(query), tcp, qhash, now + ttl, now, tag, valState);
+  struct Entry entry(DNSName(qname), qtype, qclass, std::move(responsePacket), std::move(query), tcp, qhash, now + ttl, now, tag, valState);
   if (pbdata) {
     entry.d_pbdata = std::move(*pbdata);
   }
 
   shard->d_map.insert(entry);
-  map.d_entriesCount++;
+  map.incEntriesCount();
 
   if (shard->d_map.size() > shard->d_shardSize) {
     auto& seq_idx = shard->d_map.get<SequencedTag>();
     seq_idx.erase(seq_idx.begin());
-    map.d_entriesCount--;
+    map.decEntriesCount();
   }
-  assert(map.d_entriesCount == shard->d_map.size()); // XXX
+  assert(map.getEntriesCount() == shard->d_map.size()); // NOLINT(cppcoreguidelines-pro-bounds-array-to-pointer-decay): clib implementation
 }
 
-void RecursorPacketCache::doPruneTo(size_t maxSize)
+void RecursorPacketCache::doPruneTo(time_t now, size_t maxSize)
 {
   size_t cacheSize = size();
-  pruneMutexCollectionsVector<SequencedTag>(*this, d_maps, maxSize, cacheSize);
+  pruneMutexCollectionsVector<SequencedTag>(now, d_maps, maxSize, cacheSize);
 }
 
 uint64_t RecursorPacketCache::doDump(int file)
@@ -259,7 +264,7 @@ uint64_t RecursorPacketCache::doDump(int file)
   if (fdupped == -1) {
     return 0;
   }
-  auto filePtr = std::unique_ptr<FILE, decltype(&fclose)>(fdopen(fdupped, "w"), fclose);
+  auto filePtr = pdns::UniqueFilePtr(fdopen(fdupped, "w"));
   if (!filePtr) {
     close(fdupped);
     return 0;

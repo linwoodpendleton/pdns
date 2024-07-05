@@ -80,6 +80,10 @@ if HAVE_LIBSSL
 AM_CPPFLAGS += $(LIBSSL_CFLAGS)
 endif
 
+if HAVE_GNUTLS
+AM_CPPFLAGS += $(GNUTLS_CFLAGS)
+endif
+
 if HAVE_LIBH2OEVLOOP
 AM_CPPFLAGS += $(LIBH2OEVLOOP_CFLAGS)
 endif
@@ -106,6 +110,7 @@ EXTRA_DIST=COPYING \
 	   kqueuemplexer.cc \
 	   portsmplexer.cc \
 	   cdb.cc cdb.hh \
+	   standalone_fuzz_target_runner.cc \
 	   ext/lmdb-safe/lmdb-safe.cc ext/lmdb-safe/lmdb-safe.hh \
 	   ext/protozero/include/* \
 	   builder-support/gen-version
@@ -114,7 +119,7 @@ bin_PROGRAMS = dnsdist
 
 if UNIT_TESTS
 noinst_PROGRAMS = testrunner
-TESTS_ENVIRONMENT = env BOOST_TEST_LOG_LEVEL=message SRCDIR='$(srcdir)'
+TESTS_ENVIRONMENT = env BOOST_TEST_LOG_LEVEL=message BOOST_TEST_RANDOM=1 SRCDIR='$(srcdir)'
 TESTS=testrunner
 else
 check-local:
@@ -134,25 +139,30 @@ dnsdist_SOURCES = \
 	channel.cc channel.hh \
 	circular_buffer.hh \
 	connection-management.hh \
+	coverage.cc coverage.hh \
 	credentials.cc credentials.hh \
 	dns.cc dns.hh \
 	dns_random.hh \
 	dnscrypt.cc dnscrypt.hh \
 	dnsdist-async.cc dnsdist-async.hh \
 	dnsdist-backend.cc \
+	dnsdist-backoff.hh \
 	dnsdist-cache.cc dnsdist-cache.hh \
 	dnsdist-carbon.cc dnsdist-carbon.hh \
 	dnsdist-concurrent-connections.hh \
 	dnsdist-console.cc dnsdist-console.hh \
+	dnsdist-crypto.cc dnsdist-crypto.hh \
 	dnsdist-discovery.cc dnsdist-discovery.hh \
 	dnsdist-dnscrypt.cc \
 	dnsdist-dnsparser.cc dnsdist-dnsparser.hh \
+	dnsdist-doh-common.cc dnsdist-doh-common.hh \
 	dnsdist-downstream-connection.hh \
 	dnsdist-dynblocks.cc dnsdist-dynblocks.hh \
 	dnsdist-dynbpf.cc dnsdist-dynbpf.hh \
 	dnsdist-ecs.cc dnsdist-ecs.hh \
+	dnsdist-edns.cc dnsdist-edns.hh \
 	dnsdist-healthchecks.cc dnsdist-healthchecks.hh \
-	dnsdist-idstate.hh \
+	dnsdist-idstate.cc dnsdist-idstate.hh \
 	dnsdist-internal-queries.cc dnsdist-internal-queries.hh \
 	dnsdist-kvs.hh dnsdist-kvs.cc \
 	dnsdist-lbpolicies.cc dnsdist-lbpolicies.hh \
@@ -168,6 +178,7 @@ dnsdist_SOURCES = \
 	dnsdist-lua-bindings.cc \
 	dnsdist-lua-ffi-interface.h dnsdist-lua-ffi-interface.inc \
 	dnsdist-lua-ffi.cc dnsdist-lua-ffi.hh \
+	dnsdist-lua-hooks.cc dnsdist-lua-hooks.hh \
 	dnsdist-lua-inspection-ffi.cc dnsdist-lua-inspection-ffi.h \
 	dnsdist-lua-inspection.cc \
 	dnsdist-lua-network.cc dnsdist-lua-network.hh \
@@ -177,13 +188,16 @@ dnsdist_SOURCES = \
 	dnsdist-lua.cc dnsdist-lua.hh \
 	dnsdist-mac-address.cc dnsdist-mac-address.hh \
 	dnsdist-metrics.cc dnsdist-metrics.hh \
-	dnsdist-nghttp2.cc dnsdist-nghttp2.hh \
+	dnsdist-nghttp2-in.hh \
+	dnsdist-nghttp2.hh \
 	dnsdist-prometheus.hh \
 	dnsdist-protobuf.cc dnsdist-protobuf.hh \
 	dnsdist-protocols.cc dnsdist-protocols.hh \
 	dnsdist-proxy-protocol.cc dnsdist-proxy-protocol.hh \
 	dnsdist-random.cc dnsdist-random.hh \
+	dnsdist-resolver.cc dnsdist-resolver.hh \
 	dnsdist-rings.cc dnsdist-rings.hh \
+	dnsdist-rule-chains.cc dnsdist-rule-chains.hh \
 	dnsdist-rules.cc dnsdist-rules.hh \
 	dnsdist-secpoll.cc dnsdist-secpoll.hh \
 	dnsdist-session-cache.cc dnsdist-session-cache.hh \
@@ -194,16 +208,20 @@ dnsdist_SOURCES = \
 	dnsdist-tcp-upstream.hh \
 	dnsdist-tcp.cc dnsdist-tcp.hh \
 	dnsdist-web.cc dnsdist-web.hh \
-	dnsdist-xpf.cc dnsdist-xpf.hh \
+	dnsdist-xsk.cc dnsdist-xsk.hh \
 	dnsdist.cc dnsdist.hh \
 	dnslabeltext.cc \
 	dnsname.cc dnsname.hh \
 	dnsparser.hh dnsparser.cc \
 	dnstap.cc dnstap.hh \
 	dnswriter.cc dnswriter.hh \
-	doh.hh doh.cc \
-	dolog.hh \
+	doh.hh \
+	doh3.hh \
+	dolog.cc dolog.hh \
+	doq-common.hh \
+	doq.hh \
 	ednscookies.cc ednscookies.hh \
+	ednsextendederror.cc ednsextendederror.hh \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc ednssubnet.hh \
 	ext/json11/json11.cpp \
@@ -230,7 +248,6 @@ dnsdist_SOURCES = \
 	remote_logger.cc remote_logger.hh \
 	sholder.hh \
 	snmp-agent.cc snmp-agent.hh \
-	sodcrypto.cc sodcrypto.hh \
 	sstuff.hh \
 	stat_t.hh \
 	statnode.cc statnode.hh \
@@ -239,7 +256,8 @@ dnsdist_SOURCES = \
 	tcpiohandler.cc tcpiohandler.hh \
 	threadname.hh threadname.cc \
 	uuid-utils.hh uuid-utils.cc \
-	xpf.cc xpf.hh
+	views.hh \
+	xsk.cc xsk.hh
 
 testrunner_SOURCES = \
 	base64.hh \
@@ -253,14 +271,18 @@ testrunner_SOURCES = \
 	dnscrypt.cc dnscrypt.hh \
 	dnsdist-async.cc dnsdist-async.hh \
 	dnsdist-backend.cc \
+	dnsdist-backoff.hh \
 	dnsdist-cache.cc dnsdist-cache.hh \
 	dnsdist-concurrent-connections.hh \
+	dnsdist-crypto.cc dnsdist-crypto.hh \
 	dnsdist-dnsparser.cc dnsdist-dnsparser.hh \
+	dnsdist-doh-common.cc dnsdist-doh-common.hh \
 	dnsdist-downstream-connection.hh \
 	dnsdist-dynblocks.cc dnsdist-dynblocks.hh \
 	dnsdist-dynbpf.cc dnsdist-dynbpf.hh \
 	dnsdist-ecs.cc dnsdist-ecs.hh \
-	dnsdist-idstate.hh \
+	dnsdist-edns.cc dnsdist-edns.hh \
+	dnsdist-idstate.cc dnsdist-idstate.hh \
 	dnsdist-kvs.cc dnsdist-kvs.hh \
 	dnsdist-lbpolicies.cc dnsdist-lbpolicies.hh \
 	dnsdist-lua-bindings-dnsquestion.cc \
@@ -272,24 +294,28 @@ testrunner_SOURCES = \
 	dnsdist-lua-vars.cc \
 	dnsdist-mac-address.cc dnsdist-mac-address.hh \
 	dnsdist-metrics.cc dnsdist-metrics.hh \
-	dnsdist-nghttp2.cc dnsdist-nghttp2.hh \
+	dnsdist-nghttp2-in.hh \
+	dnsdist-nghttp2.hh \
 	dnsdist-protocols.cc dnsdist-protocols.hh \
 	dnsdist-proxy-protocol.cc dnsdist-proxy-protocol.hh \
 	dnsdist-random.cc dnsdist-random.hh \
+	dnsdist-resolver.cc dnsdist-resolver.hh \
 	dnsdist-rings.cc dnsdist-rings.hh \
+	dnsdist-rule-chains.cc dnsdist-rule-chains.hh \
 	dnsdist-rules.cc dnsdist-rules.hh \
 	dnsdist-session-cache.cc dnsdist-session-cache.hh \
 	dnsdist-svc.cc dnsdist-svc.hh \
 	dnsdist-tcp-downstream.cc \
 	dnsdist-tcp.cc dnsdist-tcp.hh \
-	dnsdist-xpf.cc dnsdist-xpf.hh \
+	dnsdist-xsk.cc dnsdist-xsk.hh \
 	dnsdist.hh \
 	dnslabeltext.cc \
 	dnsname.cc dnsname.hh \
 	dnsparser.hh dnsparser.cc \
 	dnswriter.cc dnswriter.hh \
-	dolog.hh \
+	dolog.cc dolog.hh \
 	ednscookies.cc ednscookies.hh \
+	ednsextendederror.cc ednsextendederror.hh \
 	ednsoptions.cc ednsoptions.hh \
 	ednssubnet.cc ednssubnet.hh \
 	ext/luawrapper/include/LuaContext.hpp \
@@ -303,7 +329,6 @@ testrunner_SOURCES = \
 	proxy-protocol.cc proxy-protocol.hh \
 	qtype.cc qtype.hh \
 	sholder.hh \
-	sodcrypto.cc \
 	sstuff.hh \
 	stat_t.hh \
 	statnode.cc statnode.hh \
@@ -320,11 +345,13 @@ testrunner_SOURCES = \
 	test-dnsdist_cc.cc \
 	test-dnsdistasync.cc \
 	test-dnsdistbackend_cc.cc \
+	test-dnsdistbackoff.cc \
 	test-dnsdistdynblocks_hh.cc \
+	test-dnsdistedns.cc \
 	test-dnsdistkvs_cc.cc \
 	test-dnsdistlbpolicies_cc.cc \
 	test-dnsdistluanetwork.cc \
-	test-dnsdistnghttp2_cc.cc \
+	test-dnsdistnghttp2_common.hh \
 	test-dnsdistpacketcache_cc.cc \
 	test-dnsdistrings_cc.cc \
 	test-dnsdistrules_cc.cc \
@@ -338,7 +365,7 @@ testrunner_SOURCES = \
 	testrunner.cc \
 	threadname.hh threadname.cc \
 	uuid-utils.hh uuid-utils.cc \
-	xpf.cc xpf.hh
+	xsk.cc xsk.hh
 
 dnsdist_LDFLAGS = \
 	$(AM_LDFLAGS) \
@@ -388,6 +415,13 @@ if HAVE_LIBSSL
 dnsdist_LDADD += $(LIBSSL_LIBS)
 endif
 
+if HAVE_XSK
+dnsdist_LDADD += -lbpf
+dnsdist_LDADD += -lxdp
+testrunner_LDADD += -lbpf
+testrunner_LDADD += -lxdp
+endif
+
 if HAVE_LIBCRYPTO
 dnsdist_LDADD += $(LIBCRYPTO_LDFLAGS) $(LIBCRYPTO_LIBS)
 testrunner_LDADD += $(LIBCRYPTO_LDFLAGS) $(LIBCRYPTO_LIBS)
@@ -403,21 +437,46 @@ endif
 
 if HAVE_DNS_OVER_TLS
 if HAVE_GNUTLS
-dnsdist_LDADD += -lgnutls
+dnsdist_LDADD += $(GNUTLS_LIBS)
 endif
 endif
 
 if HAVE_DNS_OVER_HTTPS
 
+if HAVE_GNUTLS
+dnsdist_LDADD += $(GNUTLS_LIBS)
+endif
+
 if HAVE_LIBH2OEVLOOP
+dnsdist_SOURCES += doh.cc
 dnsdist_LDADD += $(LIBH2OEVLOOP_LIBS)
 endif
 
-endif
-
 if HAVE_NGHTTP2
+dnsdist_SOURCES += dnsdist-nghttp2-in.cc
+dnsdist_SOURCES += dnsdist-nghttp2.cc
+testrunner_SOURCES += dnsdist-nghttp2-in.cc
+testrunner_SOURCES += dnsdist-nghttp2.cc
+testrunner_SOURCES += test-dnsdistnghttp2-in_cc.cc \
+	test-dnsdistnghttp2_cc.cc
 dnsdist_LDADD += $(NGHTTP2_LDFLAGS) $(NGHTTP2_LIBS)
 testrunner_LDADD += $(NGHTTP2_LDFLAGS) $(NGHTTP2_LIBS)
+endif
+
+endif
+
+if HAVE_DNS_OVER_QUIC
+dnsdist_SOURCES += doq.cc
+endif
+
+if HAVE_DNS_OVER_HTTP3
+dnsdist_SOURCES += doh3.cc
+endif
+
+if HAVE_QUICHE
+AM_CPPFLAGS += $(QUICHE_CFLAGS)
+dnsdist_LDADD += $(QUICHE_LDFLAGS) $(QUICHE_LIBS)
+dnsdist_SOURCES += doq-common.cc
 endif
 
 if !HAVE_LUA_HPP
@@ -450,6 +509,81 @@ testrunner_SOURCES += \
 	devpollmplexer.cc \
 	portsmplexer.cc
 endif
+
+if FUZZ_TARGETS
+
+LIB_FUZZING_ENGINE ?= standalone_fuzz_target_runner.o
+
+standalone_fuzz_target_runner.o: standalone_fuzz_target_runner.cc
+
+fuzz_targets_programs =  \
+	fuzz_target_dnsdistcache
+
+if HAVE_XSK
+fuzz_targets_programs += \
+	fuzz_target_xsk
+endif
+
+fuzz_targets: $(ARC4RANDOM_LIBS) $(fuzz_targets_programs)
+
+bin_PROGRAMS += \
+	$(fuzz_targets_programs)
+
+fuzz_targets_libs = \
+	$(LIBCRYPTO_LIBS) \
+	$(ARC4RANDOM_LIBS) \
+	$(LIB_FUZZING_ENGINE)
+
+fuzz_targets_ldflags = \
+	$(AM_LDFLAGS) \
+	$(DYNLINKFLAGS) \
+	$(LIBCRYPTO_LDFLAGS) \
+	$(FUZZING_LDFLAGS)
+
+# we need the mockup runner to be built, but not linked if a real fuzzing engine is used
+fuzz_targets_deps = standalone_fuzz_target_runner.o
+
+fuzz_target_dnsdistcache_SOURCES = \
+	channel.hh channel.cc \
+	dns.cc dns.hh \
+	dnsdist-cache.cc dnsdist-cache.hh \
+	dnsdist-dnsparser.cc dnsdist-dnsparser.hh \
+	dnsdist-ecs.cc dnsdist-ecs.hh \
+	dnsdist-idstate.hh \
+	dnsdist-protocols.cc dnsdist-protocols.hh \
+	dnslabeltext.cc \
+	dnsname.cc dnsname.hh \
+	dnsparser.cc dnsparser.hh \
+	dnswriter.cc dnswriter.hh \
+	doh.hh \
+	ednsoptions.cc ednsoptions.hh \
+	ednssubnet.cc ednssubnet.hh \
+	fuzz_dnsdistcache.cc \
+	iputils.cc iputils.hh \
+	misc.cc misc.hh \
+	packetcache.hh \
+	qtype.cc qtype.hh \
+	svc-records.cc svc-records.hh
+
+fuzz_target_dnsdistcache_DEPENDENCIES = $(fuzz_targets_deps)
+fuzz_target_dnsdistcache_LDFLAGS = $(fuzz_targets_ldflags)
+fuzz_target_dnsdistcache_LDADD = $(fuzz_targets_libs)
+
+if HAVE_XSK
+fuzz_target_xsk_SOURCES = \
+	dnslabeltext.cc \
+	dnsname.cc dnsname.hh \
+	fuzz_xsk.cc \
+	gettime.cc gettime.hh \
+	iputils.cc iputils.hh \
+	misc.cc misc.hh \
+	xsk.cc xsk.hh
+fuzz_target_xsk_DEPENDENCIES = $(fuzz_targets_deps)
+fuzz_target_xsk_LDFLAGS = $(fuzz_targets_ldflags)
+fuzz_target_xsk_LDADD = $(fuzz_targets_libs) -lbpf -lxdp
+endif # HAVE_XSK
+
+endif # FUZZ_TARGETS
 
 MANPAGES=dnsdist.1
 

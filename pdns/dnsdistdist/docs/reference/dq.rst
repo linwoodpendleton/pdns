@@ -279,6 +279,15 @@ This state can be modified from the various hooks.
     :param int code: The EDNS option code
     :param string data: The EDNS option raw data
 
+  .. method:: DNSQuestion:setExtendedDNSError(infoCode [, extraText])
+
+    .. versionadded:: 1.9.0
+
+      Set an Extended DNS Error status that will be added to the response corresponding to the current query.
+
+    :param int infoCode: The EDNS Extended DNS Error code
+    :param string extraText: The optional EDNS Extended DNS Error extra text
+
   .. method:: DNSQuestion:setHTTPResponse(status, body, contentType="")
 
     .. versionadded:: 1.4.0
@@ -353,9 +362,12 @@ This state can be modified from the various hooks.
     :param string tail: The new data
     :returns: true if the operation succeeded, false otherwise
 
-  .. method:: DNSQuestion:spoof(ip|ips|raw|raws)
+  .. method:: DNSQuestion:spoof(ip|ips|raw|raws [, typeForAny])
 
     .. versionadded:: 1.6.0
+
+    .. versionchanged:: 1.9.0
+      Optional parameter ``typeForAny`` added.
 
     Forge a response with the specified record data as raw bytes. If you specify list of raws (it is assumed they match the query type), all will get spoofed in.
 
@@ -363,6 +375,7 @@ This state can be modified from the various hooks.
     :param table ComboAddresses ips: The `ComboAddress`es to be spoofed, e.g. `{ newCA("192.0.2.1"), newCA("192.0.2.2") }`.
     :param string raw: The raw string to be spoofed, e.g. `"\\192\\000\\002\\001"`.
     :param table raws: The raw strings to be spoofed, e.g. `{ "\\192\\000\\002\\001", "\\192\\000\\002\\002" }`.
+    :param int typeForAny: The type to use for raw responses when the requested type is ``ANY``, as using ``ANY`` for the type of the response record would not make sense.
 
   .. method:: DNSQuestion:suspend(asyncID, queryID, timeoutMS) -> bool
 
@@ -403,7 +416,13 @@ DNSResponse object
   - ``useECS``
 
   If the value is really needed while the response is being processed, it is possible to set a tag while the query is processed, as tags will be passed to the response object.
-  It also has one additional method:
+  It also has additional methods:
+
+  .. method:: DNSResponse.getSelectedBackend() -> Server
+
+    .. versionadded:: 1.9.0
+
+    Get the selected backend :class:`Server` or nil
 
   .. method:: DNSResponse:editTTLs(func)
 
@@ -457,7 +476,8 @@ DNSResponse object
         return DNSAction.None
       end
       function restartOnServFail(dr)
-        if dr.rcode == DNSRCode.SERVFAIL then
+        -- if the query was SERVFAIL and not already tried on the restarted pool
+        if dr.rcode == DNSRCode.SERVFAIL and dr.pool ~= 'restarted' then
           -- assign this query to a new pool
           dr.pool = 'restarted'
           -- discard the received response and
@@ -503,6 +523,12 @@ DNSHeader (``dh``) object
   .. method:: DNSHeader:getRD() -> bool
 
     Get recursion desired flag.
+
+  .. method:: DNSHeader:getTC() -> bool
+
+    .. versionadded:: 1.8.1
+
+    Get the TC flag.
 
   .. method:: DNSHeader:setAA(aa)
 

@@ -23,7 +23,6 @@
 #include <mutex>
 
 #include <mysql.h>
-#include <thread>
 #include "pdns/backends/gsql/ssql.hh"
 #include "pdns/utility.hh"
 
@@ -34,10 +33,9 @@ public:
          string msocket = "", string user = "",
          string password = "", string group = "",
          bool setIsolation = false, unsigned int timeout = 10,
-         bool threadCleanup = false, bool clientSSL = false);
+         bool threadCleanup = false);
 
-  ~SMySQL();
-  
+  ~SMySQL() override;
 
   SSqlException sPerrorException(const string& reason) override;
   void setLog(bool state) override;
@@ -59,7 +57,7 @@ private:
 
   MYSQL d_db;
   std::thread t;
-  
+
   std::string d_database;
   std::string d_host;
   std::string d_msocket;

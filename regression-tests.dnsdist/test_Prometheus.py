@@ -3,13 +3,13 @@ import os
 import requests
 import subprocess
 import unittest
-from dnsdisttests import DNSDistTest
+from dnsdisttests import DNSDistTest, pickAvailablePort
 
 @unittest.skipIf('SKIP_PROMETHEUS_TESTS' in os.environ, 'Prometheus tests are disabled')
 class TestPrometheus(DNSDistTest):
 
     _webTimeout = 2.0
-    _webServerPort = 8083
+    _webServerPort = pickAvailablePort()
     _webServerBasicAuthPassword = 'secret'
     _webServerBasicAuthPasswordHashed = '$scrypt$ln=10,p=1,r=8$6DKLnvUYEeXWh3JNOd3iwg==$kSrhdHaRbZ7R74q3lGBqO1xetgxRxhmWzYJ2Qvfm7JM='
     _webServerAPIKey = 'apisecret'
@@ -28,6 +28,10 @@ class TestPrometheus(DNSDistTest):
     declareMetric('custom-metric2', 'gauge', 'Custom gauge')
     -- and custom names
     declareMetric('custom-metric3', 'counter', 'Custom counter', 'custom_prometheus_name')
+
+    -- test prometheus labels in custom metrics
+    declareMetric('custom-metric-foo-x-bar-y-xyz', 'counter', 'Custom counter with labels', 'custom_metric_foo{x="bar",y="xyz"}')
+    declareMetric('custom-metric-foo-x-baz-y-abc', 'counter', 'Custom counter with labels', 'custom_metric_foo{x="baz",y="abc"}')
     """
 
     def checkPrometheusContentBasic(self, content):
@@ -42,7 +46,7 @@ class TestPrometheus(DNSDistTest):
             elif not line.startswith('#'):
                 tokens = line.split(' ')
                 self.assertEqual(len(tokens), 2)
-                if not line.startswith('dnsdist_') and not line.startswith('custom_prometheus_name'):
+                if not line.startswith('dnsdist_') and not line.startswith('custom_'):
                     raise AssertionError('Expecting prometheus metric to be prefixed by \'dnsdist_\', got: "%s"' % (line))
 
     def checkMetric(self, content, name, expectedType, expectedValue):

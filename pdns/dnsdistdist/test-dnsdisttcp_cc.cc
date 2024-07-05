@@ -19,7 +19,10 @@
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  */
+#ifndef BOOST_TEST_DYN_LINK
 #define BOOST_TEST_DYN_LINK
+#endif
+
 #define BOOST_TEST_NO_MAIN
 
 #include <boost/test/unit_test.hpp>
@@ -32,11 +35,6 @@
 #include "dnsdist-tcp-upstream.hh"
 
 GlobalStateHolder<NetmaskGroup> g_ACL;
-GlobalStateHolder<vector<DNSDistRuleAction> > g_ruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_respruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_cachehitrespruleactions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_cacheInsertedRespRuleActions;
-GlobalStateHolder<vector<DNSDistResponseRuleAction> > g_selfansweredrespruleactions;
 GlobalStateHolder<servers_t> g_dstates;
 
 QueryCount g_qcount;
@@ -48,7 +46,7 @@ bool checkDNSCryptQuery(const ClientState& cs, PacketBuffer& query, std::unique_
   return false;
 }
 
-bool checkQueryHeaders(const struct dnsheader* dh, ClientState&)
+bool checkQueryHeaders(const struct dnsheader& dnsHeader, ClientState& clientState)
 {
   return true;
 }
@@ -62,7 +60,7 @@ void handleResponseSent(const InternalQueryState& ids, double udiff, const Combo
 {
 }
 
-static std::function<ProcessQueryResult(DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend)> s_processQuery;
+std::function<ProcessQueryResult(DNSQuestion& dq, std::shared_ptr<DownstreamState>& selectedBackend)> s_processQuery;
 
 ProcessQueryResult processQuery(DNSQuestion& dq, LocalHolders& holders, std::shared_ptr<DownstreamState>& selectedBackend)
 {
@@ -73,17 +71,17 @@ ProcessQueryResult processQuery(DNSQuestion& dq, LocalHolders& holders, std::sha
   return ProcessQueryResult::Drop;
 }
 
-bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, const uint16_t qtype, const uint16_t qclass, const std::shared_ptr<DownstreamState>& remote, unsigned int& qnameWireLength)
+bool responseContentMatches(const PacketBuffer& response, const DNSName& qname, const uint16_t qtype, const uint16_t qclass, const std::shared_ptr<DownstreamState>& remote)
 {
   return true;
 }
 
 static std::function<bool(PacketBuffer& response, DNSResponse& dr, bool muted)> s_processResponse;
 
-bool processResponse(PacketBuffer& response, const std::vector<DNSDistResponseRuleAction>& localRespRuleActions, const std::vector<DNSDistResponseRuleAction>& localCacheInsertedRespRuleActions, DNSResponse& dr, bool muted)
+bool processResponse(PacketBuffer& response, const std::vector<dnsdist::rules::ResponseRuleAction>& respRuleActions, const std::vector<dnsdist::rules::ResponseRuleAction>& cacheInsertedRespRuleActions, DNSResponse& dnsResponse, bool muted)
 {
   if (s_processResponse) {
-    return s_processResponse(response, dr, muted);
+    return s_processResponse(response, dnsResponse, muted);
   }
 
   return false;
@@ -206,11 +204,6 @@ public:
   {
     auto step = getStep();
     BOOST_REQUIRE_EQUAL(step.request, !d_client ? ExpectedStep::ExpectedRequest::closeClient : ExpectedStep::ExpectedRequest::closeBackend);
-  }
-
-  bool hasBufferedData() const override
-  {
-    return false;
   }
 
   bool isUsable() const override
@@ -440,6 +433,39 @@ static void prependPayloadEditingID(PacketBuffer& buffer, const PacketBuffer& pa
   buffer.insert(buffer.begin(), newPayload.begin(), newPayload.end());
 }
 
+struct TestFixture
+{
+  TestFixture()
+  {
+    reset();
+  }
+  TestFixture(const TestFixture&) = delete;
+  TestFixture(TestFixture&&) = delete;
+  TestFixture& operator=(const TestFixture&) = delete;
+  TestFixture& operator=(TestFixture&&) = delete;
+  ~TestFixture()
+  {
+    reset();
+  }
+
+  static void reset()
+  {
+    s_steps.clear();
+    s_readBuffer.clear();
+    s_writeBuffer.clear();
+    s_backendReadBuffer.clear();
+    s_backendWriteBuffer.clear();
+
+    g_proxyProtocolACL.clear();
+    g_verbose = false;
+    IncomingTCPConnectionState::clearAllDownstreamConnections();
+
+    /* we _NEED_ to set this function to empty otherwise we might get what was set
+       by the last test, and we might not like it at all */
+    s_processQuery = nullptr;
+  }
+};
+
 static void testInit(const std::string& name, TCPClientThreadData& threadData)
 {
 #ifdef DEBUGLOG_ENABLED
@@ -448,25 +474,16 @@ static void testInit(const std::string& name, TCPClientThreadData& threadData)
   (void) name;
 #endif
 
-  s_steps.clear();
-  s_readBuffer.clear();
-  s_writeBuffer.clear();
-  s_backendReadBuffer.clear();
-  s_backendWriteBuffer.clear();
-
-  g_proxyProtocolACL.clear();
-  g_verbose = false;
-  IncomingTCPConnectionState::clearAllDownstreamConnections();
-
+  TestFixture::reset();
   threadData.mplexer = std::make_unique<MockupFDMultiplexer>();
 }
 
 #define TEST_INIT(str) testInit(str, threadData)
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnection_SelfAnswered, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -500,7 +517,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 
@@ -523,7 +540,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
   }
@@ -558,7 +575,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -582,7 +599,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 
@@ -610,7 +627,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * count);
 #endif
   }
@@ -636,7 +653,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -672,7 +689,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -705,15 +722,15 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -766,7 +783,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * 2U);
   }
@@ -793,7 +810,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
   }
@@ -823,7 +840,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setNotReady(-1);
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(threadData.mplexer->run(&now), 0);
     struct timeval later = now;
     later.tv_sec += g_tcpRecvTimeout + 1;
@@ -840,10 +857,10 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionWithProxyProtocol_SelfAnswered)
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnection_BackendNoOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   auto tlsCtx = std::make_shared<MockupTLSCtx>();
   localCS.tlsFrontend = std::make_shared<TLSFrontend>(tlsCtx);
 
@@ -903,7 +920,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
@@ -943,7 +960,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -982,7 +999,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1025,7 +1042,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1052,7 +1069,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1090,7 +1107,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1160,7 +1177,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     /* set the incoming descriptor as ready! */
     dynamic_cast<MockupFDMultiplexer*>(threadData.mplexer.get())->setReady(-1);
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -1221,7 +1238,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1257,7 +1274,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     struct timeval later = now;
     later.tv_sec += backend->d_config.tcpSendTimeout + 1;
     auto expiredWriteConns = threadData.mplexer->getTimeouts(later, true);
@@ -1303,7 +1320,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     struct timeval later = now;
     later.tv_sec += backend->d_config.tcpRecvTimeout + 1;
     auto expiredConns = threadData.mplexer->getTimeouts(later, false);
@@ -1360,7 +1377,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1416,7 +1433,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
@@ -1475,7 +1492,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1527,7 +1544,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size() * backend->d_config.d_retries);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
@@ -1587,7 +1604,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size());
     BOOST_CHECK(s_writeBuffer == query);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size() * backend->d_config.d_retries);
@@ -1628,7 +1645,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), 0U);
     BOOST_CHECK_EQUAL(s_backendWriteBuffer.size(), query.size());
     BOOST_CHECK(s_backendWriteBuffer == query);
@@ -1690,7 +1707,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(s_writeBuffer.size(), query.size() * count);
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
 
@@ -1732,7 +1749,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     BOOST_CHECK_EQUAL(backend->outstanding.load(), 0U);
 
     /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
@@ -1740,10 +1757,10 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnection_BackendNoOOOR)
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   /* enable out-of-order on the front side */
   localCS.d_maxInFlightQueriesPerConn = 65536;
 
@@ -1916,7 +1933,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -2048,7 +2065,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
@@ -2228,7 +2245,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
 
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
@@ -2304,7 +2321,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2387,7 +2404,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while ((threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2504,7 +2521,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -2656,7 +2673,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -2863,7 +2880,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3037,7 +3054,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3301,7 +3318,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3427,7 +3444,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3512,7 +3529,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3577,7 +3594,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3602,8 +3619,8 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     g_tcpRecvTimeout = 2;
 
     /* we need to clear them now, otherwise we end up with dangling pointers to the steps via the TLS context, etc */
-    /* we have one connection to clear, no proxy protocol */
-    BOOST_CHECK_EQUAL(IncomingTCPConnectionState::clearAllDownstreamConnections(), 1U);
+    /* we have no connection to clear, because there was a timeout! */
+    BOOST_CHECK_EQUAL(IncomingTCPConnectionState::clearAllDownstreamConnections(), 0U);
   }
 
   {
@@ -3768,7 +3785,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -3853,7 +3870,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }
@@ -3880,10 +3897,10 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendOOOR)
   }
 }
 
-BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
+BOOST_FIXTURE_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR, TestFixture)
 {
   auto local = getBackendAddress("1", 80);
-  ClientState localCS(local, true, false, false, "", {});
+  ClientState localCS(local, true, false, 0, "", {}, true);
   /* enable out-of-order on the front side */
   localCS.d_maxInFlightQueriesPerConn = 65536;
 
@@ -4085,7 +4102,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0) {
       threadData.mplexer->run(&now);
     }
@@ -4137,7 +4154,7 @@ BOOST_AUTO_TEST_CASE(test_IncomingConnectionOOOR_BackendNotOOOR)
     };
 
     auto state = std::make_shared<IncomingTCPConnectionState>(ConnectionInfo(&localCS, getBackendAddress("84", 4242)), threadData, now);
-    IncomingTCPConnectionState::handleIO(state, now);
+    state->handleIO();
     while (!timeout && (threadData.mplexer->getWatchedFDCount(false) != 0 || threadData.mplexer->getWatchedFDCount(true) != 0)) {
       threadData.mplexer->run(&now);
     }

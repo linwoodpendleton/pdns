@@ -33,6 +33,7 @@ def main():
     """Start the script."""
     args = create_argument_parser()
 
+    repo_root_dir = Path(helpers.get_repo_root())
     fixes_path = Path(args.fixes_file)
     compdb_filename = os.path.join(fixes_path.parent, "compile_commands.json")
     compdb = helpers.load_compdb(compdb_filename)
@@ -43,6 +44,12 @@ def main():
     if not fixes:
         print("No diagnostics or warnings produced by clang-tidy")
         return 0
+
+    gh_step_summary = os.getenv("GITHUB_STEP_SUMMARY")
+    if gh_step_summary:
+        # Print Markdown summary
+        summary_fp = open(gh_step_summary, "a", encoding="utf-8")
+        print("### clang-tidy summary", file=summary_fp)
 
     fixes = fixes["Diagnostics"]
     have_warnings = False
@@ -67,14 +74,6 @@ def main():
             else os.path.join(directory, filename)
         )
 
-        if full_filename not in compdb:
-            print(
-                f"Skipping `{full_filename}`"
-                " because it is not found"
-                " in the compilation database"
-            )
-            continue
-
         try:
             file_contents = helpers.load_file(full_filename)
         except OSError:
@@ -85,16 +84,23 @@ def main():
 
         line = helpers.get_line_from_offset(file_contents, offset)
 
+        rel_filename = Path(full_filename).resolve().relative_to(repo_root_dir)
         annotation = "".join(
             [
-                f"::warning file={full_filename},line={line}",
+                f"::warning file={rel_filename},line={line}",
                 f"::{message} ({name} - Level={level})",
             ]
         )
         print(annotation)
 
         # User-friendly printout
-        print(f"{level}: {full_filename}:{line}: {message} ({name})")
+        print(f"{level}: {rel_filename}:{line}: {message} ({name})")
+
+        if gh_step_summary:
+            print(
+                f"- **{rel_filename}:{line}** {message} (`{name}`)",
+                file=summary_fp,
+            )
 
         have_warnings = True
 

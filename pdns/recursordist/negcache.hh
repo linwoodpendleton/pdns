@@ -95,10 +95,10 @@ public:
   void add(const NegCacheEntry& ne);
   void updateValidationStatus(const DNSName& qname, QType qtype, vState newState, boost::optional<time_t> capTTD);
   bool get(const DNSName& qname, QType qtype, const struct timeval& now, NegCacheEntry& ne, bool typeMustMatch = false, bool serverStale = false, bool refresh = false);
-  bool getRootNXTrust(const DNSName& qname, const struct timeval& now, NegCacheEntry& ne, bool serveStale, bool refresh);
+  bool getRootNXTrust(const DNSName& qname, const struct timeval& now, NegCacheEntry& negEntry, bool serveStale, bool refresh);
   size_t count(const DNSName& qname);
   size_t count(const DNSName& qname, QType qtype);
-  void prune(size_t maxEntries);
+  void prune(time_t now, size_t maxEntries);
   void clear();
   size_t doDump(int fd, size_t maxCacheEntries, time_t now = time(nullptr));
   size_t wipe(const DNSName& name, bool subtree = false);
@@ -140,8 +140,8 @@ private:
       uint64_t d_contended_count{0};
       uint64_t d_acquired_count{0};
       void invalidate() {}
+      void preRemoval(const NegCacheEntry& /* entry */) {}
     };
-    pdns::stat_t d_entriesCount{0};
 
     LockGuardedTryHolder<MapCombo::LockedContent> lock()
     {
@@ -154,8 +154,29 @@ private:
       return locked;
     }
 
+    [[nodiscard]] auto getEntriesCount() const
+    {
+      return d_entriesCount.load();
+    }
+
+    void incEntriesCount()
+    {
+      ++d_entriesCount;
+    }
+
+    void decEntriesCount()
+    {
+      --d_entriesCount;
+    }
+
+    void clearEntriesCount()
+    {
+      d_entriesCount = 0;
+    }
+
   private:
     LockGuarded<LockedContent> d_content;
+    pdns::stat_t d_entriesCount{0};
   };
 
   vector<MapCombo> d_maps;
@@ -168,7 +189,4 @@ private:
   {
     return d_maps.at(qname.hash() % d_maps.size());
   }
-
-public:
-  void preRemoval(MapCombo::LockedContent& /* map */, const NegCacheEntry& /* entry */) {}
 };

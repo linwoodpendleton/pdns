@@ -165,7 +165,7 @@ void Utility::dropGroupPrivs( uid_t uid, gid_t gid )
       if (initgroups(pw->pw_name, gid)<0) {
         int err = errno;
         SLOG(g_log<<Logger::Critical<<"Unable to set supplementary groups: "<<stringerror(err)<<endl,
-             g_slog->withName("runtime")->error(Logr::Critical, err, "Unable to drop supplementary groups"));
+             g_slog->withName("runtime")->error(Logr::Critical, err, "Unable to set supplementary groups"));
         exit(1);
       }
     }
@@ -180,12 +180,12 @@ void Utility::dropUserPrivs( uid_t uid )
     if(setuid(uid)<0) {
       int err = errno;
       SLOG(g_log<<Logger::Critical<<"Unable to set effective user id to "<<uid<<": "<<stringerror(err)<<endl,
-           g_slog->withName("runtime")->error(Logr::Error, err, "Unable to set effective user id", "uid", Logging::Loggable(uid)));
+           g_slog->withName("runtime")->error(Logr::Critical, err, "Unable to set effective user id", "uid", Logging::Loggable(uid)));
       exit(1);
     }
     else {
       SLOG(g_log<<Logger::Info<<"Set effective user id to "<<uid<<endl,
-           g_slog->withName("runtime")->info("Set effective user", "uid", Logging::Loggable(uid)));
+           g_slog->withName("runtime")->info(Logr::Info, "Set effective user", "uid", Logging::Loggable(uid)));
     }
   }
 }
@@ -274,6 +274,7 @@ time_t Utility::timegm(struct tm *const t)
 
   /* day is now the number of days since 'Jan 1 1970' */
   i = 7;
+  // coverity[store_truncates_time_t]
   t->tm_wday = (day + 4) % i;                        /* Sunday=0, Monday=1, ..., Saturday=6 */
 
   i = 24;

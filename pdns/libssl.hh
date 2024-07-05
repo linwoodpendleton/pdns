@@ -12,6 +12,7 @@
 #include "config.h"
 #include "circular_buffer.hh"
 #include "lock.hh"
+#include "misc.hh"
 
 enum class LibsslTLSVersion : uint8_t { Unknown, TLS10, TLS11, TLS12, TLS13 };
 
@@ -53,6 +54,8 @@ public:
   bool d_asyncMode{false};
   /* enable kTLS mode, if supported */
   bool d_ktls{false};
+  /* set read ahead mode, if supported */
+  bool d_readAhead{true};
 };
 
 struct TLSErrorCounters
@@ -102,6 +105,8 @@ public:
   bool decrypt(const unsigned char* iv, EVP_CIPHER_CTX* ectx, HMAC_CTX* hctx) const;
 #endif
 
+  [[nodiscard]] std::string content() const;
+
 private:
   unsigned char d_name[TLS_TICKETS_KEY_NAME_SIZE];
   unsigned char d_cipherKey[TLS_TICKETS_CIPHER_KEY_SIZE];
@@ -121,7 +126,6 @@ public:
 
 private:
   void addKey(std::shared_ptr<OpenSSLTLSTicketKey>&& newKey);
-
   SharedLockGuarded<boost::circular_buffer<std::shared_ptr<OpenSSLTLSTicketKey> > > d_ticketKeys;
 };
 
@@ -152,7 +156,7 @@ bool libssl_set_min_tls_version(std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)
 std::pair<std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)>, std::vector<std::string>> libssl_init_server_context(const TLSConfig& config,
                                                                                                             std::map<int, std::string>& ocspResponses);
 
-std::unique_ptr<FILE, int(*)(FILE*)> libssl_set_key_log_file(std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)>& ctx, const std::string& logFile);
+pdns::UniqueFilePtr libssl_set_key_log_file(std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)>& ctx, const std::string& logFile);
 
 /* called in a client context, if the client advertised more than one ALPN values and the server returned more than one as well, to select the one to use. */
 #ifndef DISABLE_NPN

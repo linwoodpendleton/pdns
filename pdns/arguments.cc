@@ -81,11 +81,6 @@ vector<string> ArgvMap::list()
   return ret;
 }
 
-string ArgvMap::getHelp(const string& item)
-{
-  return helpmap[item];
-}
-
 string& ArgvMap::set(const string& var, const string& help)
 {
   helpmap[var] = help;
@@ -364,15 +359,23 @@ static const map<string, string> deprecateList = {
   {"snmp-master-socket", "snmp-daemon-socket"},
   {"xpf-allow-from", "Proxy Protocol"},
   {"xpf-rr-code", "Proxy Protocol"},
+  {"domain-metadata-cache-ttl", "zone-metadata-cache-ttl"},
 };
 
-void ArgvMap::warnIfDeprecated(const string& var)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): accesses d_log (compiled out in auth, hence clang-tidy message)
+void ArgvMap::warnIfDeprecated(const string& var) const
 {
   const auto msg = deprecateList.find(var);
   if (msg != deprecateList.end()) {
     SLOG(g_log << Logger::Warning << "'" << var << "' is deprecated and will be removed in a future release, use '" << msg->second << "' instead" << endl,
          d_log->info(Logr::Warning, "Option is deprecated and will be removed in a future release", "deprecatedName", Logging::Loggable(var), "alternative", Logging::Loggable(msg->second)));
   }
+}
+
+string ArgvMap::isDeprecated(const string& var)
+{
+  const auto msg = deprecateList.find(var);
+  return msg != deprecateList.end() ? msg->second : "";
 }
 
 void ArgvMap::parseOne(const string& arg, const string& parseOnly, bool lax)
@@ -438,7 +441,7 @@ void ArgvMap::parseOne(const string& arg, const string& parseOnly, bool lax)
       vector<string> parts;
       stringtok(parts, d_params["ignore-unknown-settings"], " ,\t\n\r");
       if (find(parts.begin(), parts.end(), var) != parts.end()) {
-        d_unknownParams[var] = val;
+        d_unknownParams[var] = std::move(val);
         SLOG(g_log << Logger::Warning << "Ignoring unknown setting '" << var << "' as requested" << endl,
              d_log->info(Logr::Warning, "Ignoring unknown setting as requested", "name", Logging::Loggable(var)));
         return;
@@ -475,7 +478,7 @@ void ArgvMap::preParse(int& argc, char** argv, const string& arg)
   }
 }
 
-bool ArgvMap::parseFile(const char* fname, const string& arg, bool lax)
+bool ArgvMap::parseFile(const string& fname, const string& arg, bool lax)
 {
   string line;
   string pline;
@@ -523,19 +526,19 @@ bool ArgvMap::parseFile(const char* fname, const string& arg, bool lax)
   return true;
 }
 
-bool ArgvMap::preParseFile(const char* fname, const string& arg, const string& theDefault)
+bool ArgvMap::preParseFile(const string& fname, const string& arg, const string& theDefault)
 {
   d_params[arg] = theDefault;
 
   return parseFile(fname, arg, false);
 }
 
-bool ArgvMap::file(const char* fname, bool lax)
+bool ArgvMap::file(const string& fname, bool lax)
 {
   return file(fname, lax, false);
 }
 
-bool ArgvMap::file(const char* fname, bool lax, bool included)
+bool ArgvMap::file(const string& fname, bool lax, bool included)
 {
   if (!parmIsset("include-dir")) { // inject include-dir
     set("include-dir", "Directory to include configuration files from");
@@ -550,7 +553,7 @@ bool ArgvMap::file(const char* fname, bool lax, bool included)
   // handle include here (avoid re-include)
   if (!included && !d_params["include-dir"].empty()) {
     std::vector<std::string> extraConfigs;
-    gatherIncludes(extraConfigs);
+    gatherIncludes(d_params["include-dir"], ".conf", extraConfigs);
     for (const std::string& filename : extraConfigs) {
       if (!file(filename.c_str(), lax, true)) {
         SLOG(g_log << Logger::Error << filename << " could not be parsed" << std::endl,
@@ -563,44 +566,45 @@ bool ArgvMap::file(const char* fname, bool lax, bool included)
   return true;
 }
 
-void ArgvMap::gatherIncludes(std::vector<std::string>& extraConfigs)
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static): accesses d_log (compiled out in auth, hence clang-tidy message)
+void ArgvMap::gatherIncludes(const std::string& directory, const std::string& suffix, std::vector<std::string>& extraConfigs)
 {
-  extraConfigs.clear();
-  if (d_params["include-dir"].empty()) {
+  if (directory.empty()) {
     return; // nothing to do
   }
 
-  DIR* dir = nullptr;
-  if ((dir = opendir(d_params["include-dir"].c_str())) == nullptr) {
-    int err = errno;
-    string msg = d_params["include-dir"] + " is not accessible: " + stringerror(err);
-    SLOG(g_log << Logger::Error << msg << std::endl,
-         d_log->error(Logr::Error, err, "Directory is not accessible", "name", Logging::Loggable(d_params["include-dir"])));
-    throw ArgException(msg);
-  }
-
-  struct dirent* ent = nullptr;
-  while ((ent = readdir(dir)) != nullptr) { // NOLINT(concurrency-mt-unsafe): see Linux man page
-    if (ent->d_name[0] == '.') {
-      continue; // skip any dots
+  std::vector<std::string> vec;
+  auto directoryError = pdns::visit_directory(directory, [this, &directory, &suffix, &vec]([[maybe_unused]] ino_t inodeNumber, const std::string_view& name) {
+    (void)this;
+    if (boost::starts_with(name, ".")) {
+      return true; // skip any dots
     }
-    if (boost::ends_with(ent->d_name, ".conf")) {
+    if (boost::ends_with(name, suffix)) {
       // build name
-      string name = d_params["include-dir"] + "/" + ent->d_name; // NOLINT: Posix API
+      string fullName = directory + "/" + std::string(name);
       // ensure it's readable file
       struct stat statInfo
       {
       };
-      if (stat(name.c_str(), &statInfo) != 0 || !S_ISREG(statInfo.st_mode)) {
-        string msg = name + " is not a regular file";
+      if (stat(fullName.c_str(), &statInfo) != 0 || !S_ISREG(statInfo.st_mode)) {
+        string msg = fullName + " is not a regular file";
         SLOG(g_log << Logger::Error << msg << std::endl,
-             d_log->info(Logr::Error, "Unable to open non-regular file", "name", Logging::Loggable(name)));
-        closedir(dir);
+             d_log->info(Logr::Error, "Unable to open non-regular file", "name", Logging::Loggable(fullName)));
         throw ArgException(msg);
       }
-      extraConfigs.push_back(name);
+      vec.emplace_back(fullName);
     }
+    return true;
+  });
+
+  if (directoryError) {
+    int err = errno;
+    string msg = directory + " is not accessible: " + stringerror(err);
+    SLOG(g_log << Logger::Error << msg << std::endl,
+         d_log->error(Logr::Error, err, "Directory is not accessible", "name", Logging::Loggable(directory)));
+    throw ArgException(msg);
   }
-  std::sort(extraConfigs.begin(), extraConfigs.end(), CIStringComparePOSIX());
-  closedir(dir);
+
+  std::sort(vec.begin(), vec.end(), CIStringComparePOSIX());
+  extraConfigs.insert(extraConfigs.end(), vec.begin(), vec.end());
 }

@@ -38,19 +38,19 @@ public:
   StatRing& operator=(const StatRing&) = delete;
   StatRing& operator=(StatRing&&) = delete;
   StatRing(StatRing&&) = default;
-  
+
   void account(const T &item);
 
   uint64_t getSize() const;
   uint64_t getEntriesCount() const;
-  void resize(unsigned int newsize);  
+  void resize(unsigned int newsize);
   void reset();
   void setHelp(const string &str);
   string getHelp() const;
 
   vector<pair<T, unsigned int> > get() const;
 private:
-  static bool popisort(const pair<T,int> &a, const pair<T,int> &b) 
+  static bool popisort(const pair<T,int> &a, const pair<T,int> &b)
   {
     return (a.second > b.second);
   }
@@ -121,7 +121,7 @@ public:
       if (it == d_dnsnameqtyperings.end()) {
 	throw runtime_error("Attempting to account to nonexistent dnsname+qtype ring '"+std::string(name)+"'");
       }
-      it->second.lock()->account(std::make_tuple(dnsname, qtype));
+      it->second.lock()->account(std::tuple(dnsname, qtype));
     }
   }
 

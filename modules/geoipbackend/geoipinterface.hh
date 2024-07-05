@@ -67,8 +67,6 @@ public:
                                boost::optional<int>& alt, boost::optional<int>& prec)
     = 0;
 
-
-
   virtual bool queryDomain(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
   virtual bool queryDomainV6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
   virtual bool queryISP(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
@@ -80,11 +78,12 @@ public:
   virtual bool queryASN2(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
   virtual bool queryASN2V6(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
 
+
   virtual ~GeoIPInterface() {}
 
-  static unique_ptr<GeoIPInterface> makeInterface(const string& dbStr,const string& db_domain_Str,const string& db_isp_Str);
+  static unique_ptr<GeoIPInterface> makeInterface(const string& dbStr);
 
 private:
-  static unique_ptr<GeoIPInterface> makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts);
-  static unique_ptr<GeoIPInterface> makeDATInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts);
+  static unique_ptr<GeoIPInterface> makeMMDBInterface(const string& fname, const map<string, string>& opts);
+  static unique_ptr<GeoIPInterface> makeDATInterface(const string& fname, const map<string, string>& opts);
 };

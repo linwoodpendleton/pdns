@@ -110,10 +110,8 @@ Sending metrics over SNMP
 
 The recursor can export statistics over SNMP and send traps from :doc:`Lua <lua-scripting/index>`, provided support is compiled into the Recursor and :ref:`setting-snmp-agent` set.
 
-MIB
-^^^
+For the details of all values that can be retrieved using SNMP, see the `SNMP MIB <https://github.com/PowerDNS/pdns/blob/master/pdns/recursordist/RECURSOR-MIB.txt>`_.
 
-.. literalinclude:: ../RECURSOR-MIB.txt
 
 .. _metricnames:
 
@@ -170,7 +168,7 @@ number of answers synthesized from NSEC entries and wildcards by the NSEC3 aggre
 
 all-outqueries
 ^^^^^^^^^^^^^^
-counts the number of outgoing UDP queries since starting
+counts the number of outgoing queries since starting, this includes UDP, TCP, DoT queries both over IPv4 and IPv6
 
 answers-slow
 ^^^^^^^^^^^^
@@ -458,7 +456,7 @@ number of outgoing queries dropped because of   :ref:`setting-dont-query` settin
 
 dot-outqueries
 ^^^^^^^^^^^^^^
-counts the number of outgoing DoT queries since starting
+counts the number of outgoing DoT queries since starting, both using IPv4 and IPv6
 
 qname-min-fallback-success
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -513,11 +511,11 @@ counts the number of non-query packets received   on server sockets that should 
 
 ipv6-outqueries
 ^^^^^^^^^^^^^^^
-number of outgoing queries over IPv6
+number of outgoing queries over IPv6 using UDP, since version 5.0.0 also including TCP and DoT
 
 ipv6-questions
 ^^^^^^^^^^^^^^
-counts all end-user initiated queries with the RD   bit set, received over IPv6 UDP
+counts all client initiated queries using IPv6
 
 maintenance-usec
 ^^^^^^^^^^^^^^^^
@@ -534,6 +532,14 @@ returns the number of bytes allocated by the process (broken, always returns 0)
 max-cache-entries
 ^^^^^^^^^^^^^^^^^
 currently configured maximum number of cache entries
+
+max-chain-length
+^^^^^^^^^^^^^^^^
+maximum chain length
+
+max-chain-weight
+^^^^^^^^^^^^^^^^
+maximum chain weight. The weight of a chain of outgoing queries is the product of the number of chained queries by the size of the response received from the external authoritative server. 
 
 max-packetcache-entries
 ^^^^^^^^^^^^^^^^^^^^^^^
@@ -760,7 +766,7 @@ counts the number of currently active TCP/IP clients
 
 tcp-outqueries
 ^^^^^^^^^^^^^^
-counts the number of outgoing TCP queries since   starting
+counts the number of outgoing TCP queries since starting, both using IPv4 and IPV6
 
 tcp-questions
 ^^^^^^^^^^^^^

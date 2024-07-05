@@ -35,10 +35,17 @@ AC_DEFINE([RECURSOR], [1],
 m4_pattern_forbid([^_?PKG_[A-Z_]+$], [*** pkg.m4 missing, please install pkg-config])
 
 AX_CXX_COMPILE_STDCXX_17([noext], [mandatory])
-LT_INIT()
+PDNS_CHECK_CARGO([1.64])
+
+# Rust runtime used dlopen from its static lib
+LT_INIT([dlopen])
+AC_SUBST([LIBDL], [$lt_cv_dlopen_libs])
 
 PDNS_CHECK_OS
 PDNS_CHECK_NETWORK_LIBS
+AC_SEARCH_LIBS([res_query], [resolv], [], [AC_SEARCH_LIBS([__res_query], [resolv])])
+# macOS uses an alternative name internally
+AC_SEARCH_LIBS([res_9_query], [resolv])
 PTHREAD_SET_NAME
 AC_FUNC_STRERROR_R
 
@@ -63,6 +70,7 @@ AS_IF([test -n "$pdns_context_library"], [AC_MSG_RESULT([$pdns_context_library])
 
 PDNS_ENABLE_UNIT_TESTS
 PDNS_ENABLE_REPRODUCIBLE
+PDNS_ENABLE_COVERAGE
 
 PDNS_WITH_LUA([mandatory])
 AS_IF([test "x$LUAPC" = "xluajit"], [
@@ -198,7 +206,9 @@ AC_CONFIG_FILES([Makefile
 	ext/json11/Makefile
 	ext/probds/Makefile
 	ext/yahttp/Makefile
-	ext/yahttp/yahttp/Makefile])
+	ext/yahttp/yahttp/Makefile
+	settings/Makefile
+	settings/rust/Makefile])
 
 AC_OUTPUT
 

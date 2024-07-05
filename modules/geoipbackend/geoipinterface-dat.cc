@@ -522,7 +522,7 @@ public:
     return false;
   }
 
-  ~GeoIPInterfaceDAT() {}
+  ~GeoIPInterfaceDAT() override = default;
 
 private:
   unsigned int d_db_type;

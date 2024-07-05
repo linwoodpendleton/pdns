@@ -55,8 +55,6 @@ caStore *file*
     when using DoT, read the trusted CA certificates from *file*. Default is to use the system provided CA store.
 tlsProvider *name*
     when using DoT, use TLS provider *name*. Currently supported (if compiled in): `openssl` and `gnutls`. Default is `openssl` if available.
-xpf *XPFCODE* *XPFVERSION* *XPFPROTO* *XPFSRC* *XPFDST*
-	Send an *XPF* additional with these parameters.
 opcode *OPNUM*
     Use opcode *OPNUM* instead of 0 (Query). For example, ``sdig 192.0.2.1 53 example.com SOA opcode 4`` sends a ``NOTIFY``.
 
@@ -64,9 +62,10 @@ Examples
 --------
 
 Simple queries to local resolvers 
-    sdig 127.0.0.1 53 example.com AAAA recurse
-    sdig ::1 53 example.com A recurse
+    ``sdig 127.0.0.1 53 example.com AAAA recurse``
+
+    ``sdig ::1 53 example.com A recurse``
 
 Query to a DNS-over-HTTPS server requesting dnssec and recursion
-    sdig https://dns.example.net/dns-query 443 example.com A dnssec recurse
+    ``sdig https://dns.example.net/dns-query 443 example.com A dnssec recurse``
 
