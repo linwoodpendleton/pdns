@@ -25,7 +25,7 @@
 #include <mysql.h>
 #include "pdns/backends/gsql/ssql.hh"
 #include "pdns/utility.hh"
-
+#include <thread>
 class SMySQL : public SSql
 {
 public:
