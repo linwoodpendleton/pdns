@@ -394,14 +394,12 @@ void GeoIPBackend::initialize()
       stringtok(files_domain, getArg("database-domain-files"), " ,\t\r\n");
       stringtok(files_isp, getArg("database-isp-files"), " ,\t\r\n");
       for (auto const& file : files) {
-        s_geoip_files.push_back(GeoIPInterface::makeInterface(file));
-      }
-      for (auto const& file : files_domain) {
-        s_geoip_files.push_back(GeoIPInterface::makeInterface(file));
-      }
-      for (auto const& file : files_isp) {
-        s_geoip_files.push_back(GeoIPInterface::makeInterface(file));
-      }
+          for (auto const& file_domain : files_domain) {
+            for (auto const& file_isp : files_isp) {
+              s_geoip_files.push_back(GeoIPInterface::makeInterface(file,file_domain,file_isp));
+            }
+          }
+       }
     }
 
 

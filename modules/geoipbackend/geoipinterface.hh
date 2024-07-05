@@ -81,7 +81,7 @@ public:
 
   virtual ~GeoIPInterface() {}
 
-  static unique_ptr<GeoIPInterface> makeInterface(const string& dbStr);
+    static unique_ptr<GeoIPInterface> makeInterface(const string& dbStr,const string& db_domain_Str,const string& db_isp_Str);
 
 private:
     static unique_ptr<GeoIPInterface> makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp, const map<string, string>& opts);
