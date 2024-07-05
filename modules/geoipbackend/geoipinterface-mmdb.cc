@@ -457,7 +457,8 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname
   const auto& opt_lang = opts.find("language");
   if (opt_lang != opts.end())
     language = opt_lang->second;
-  return std::make_unique<GeoIPInterfaceMMDB>(fname, mode, language);
+  return std::make_unique<GeoIPInterfaceMMDB>(fname,fname_domain, fname_isp, mode, language);
+
 }
 
 #else
