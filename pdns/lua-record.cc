@@ -853,10 +853,7 @@ static vector<string> genericIfUp(const boost::variant<iplist_t, ipunitlist_t>& 
   return convComboAddressListToString(res);
 }
 
-std::vector<std::string> WMUtility::chinamobile_column_data;
-std::vector<std::string> WMUtility::unicom_column_data;
-std::vector<std::string> WMUtility::default_ipv4_column_data;
-std::vector<std::string> WMUtility::default_ipv6_column_data;
+
 static void setupLuaRecords(LuaContext& lua) // NOLINT(readability-function-cognitive-complexity)
 {
   lua.writeFunction("latlon", []() {
