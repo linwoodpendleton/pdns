@@ -61,27 +61,27 @@ struct geoipregion_deleter
 class GeoIPInterfaceDAT : public GeoIPInterface
 {
 public:
-  GeoIPInterfaceDAT(const string& fname, const string& fname_domain, const string& fname_isp, const string& modeStr)
-  {
-    int flags;
-    if (modeStr == "standard")
-      flags = GEOIP_STANDARD;
-    else if (modeStr == "memory")
-      flags = GEOIP_MEMORY_CACHE;
-    else if (modeStr == "index")
-      flags = GEOIP_INDEX_CACHE;
-#ifdef HAVE_MMAP
-    else if (modeStr == "mmap")
-      flags = GEOIP_MMAP_CACHE;
-#endif
-    else
-      throw PDNSException("Invalid cache mode " + modeStr + " for GeoIP backend");
+   GeoIPInterfaceDAT(const string& fname, const string& modeStr)
+    {
+      int flags;
+      if (modeStr == "standard")
+        flags = GEOIP_STANDARD;
+      else if (modeStr == "memory")
+        flags = GEOIP_MEMORY_CACHE;
+      else if (modeStr == "index")
+        flags = GEOIP_INDEX_CACHE;
+  #ifdef HAVE_MMAP
+      else if (modeStr == "mmap")
+        flags = GEOIP_MMAP_CACHE;
+  #endif
+      else
+        throw PDNSException("Invalid cache mode " + modeStr + " for GeoIP backend");
 
-    d_gi = std::unique_ptr<GeoIP, geoip_deleter>(GeoIP_open(fname.c_str(), flags));
-    if (d_gi.get() == nullptr)
-      throw PDNSException("Cannot open GeoIP database " + fname);
-    d_db_type = GeoIP_database_edition(d_gi.get());
-  }
+      d_gi = std::unique_ptr<GeoIP, geoip_deleter>(GeoIP_open(fname.c_str(), flags));
+      if (d_gi.get() == nullptr)
+        throw PDNSException("Cannot open GeoIP database " + fname);
+      d_db_type = GeoIP_database_edition(d_gi.get());
+    }
 
   bool queryCountry(string& ret, GeoIPNetmask& gl, const string& ip) override
   {
