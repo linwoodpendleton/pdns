@@ -852,7 +852,7 @@ static vector<string> genericIfUp(const boost::variant<iplist_t, ipunitlist_t>& 
   vector<ComboAddress> res = useSelector(getOptionValue(options, "backupSelector", "random"), s_lua_record_ctx->bestwho, ret);
   return convComboAddressListToString(res);
 }
-std::vector<std::string> WMUtility::column_data;
+
 std::vector<std::string> WMUtility::chinamobile_column_data;
 std::vector<std::string> WMUtility::unicom_column_data;
 std::vector<std::string> WMUtility::default_ipv4_column_data;

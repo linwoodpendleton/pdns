@@ -35,7 +35,7 @@
 #include <chrono>
 #include <ctime>
 #include "wmutility.hh"
-std::vector<std::string> WMUtility::column_data;
+
 std::vector<std::string> WMUtility::chinamobile_column_data;
 std::vector<std::string> WMUtility::unicom_column_data;
 std::vector<std::string> WMUtility::default_ipv4_column_data;
