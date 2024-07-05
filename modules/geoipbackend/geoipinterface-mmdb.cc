@@ -447,7 +447,7 @@ private:
     }
 };
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname, const string& fname_domain, const string& fname_isp , const map<string, string>& opts)
 {
   string mode = "";
   string language = "en";
@@ -458,14 +458,12 @@ unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface(const string& fname
   if (opt_lang != opts.end())
     language = opt_lang->second;
   return std::make_unique<GeoIPInterfaceMMDB>(fname,fname_domain, fname_isp, mode, language);
-
 }
 
 #else
 
-unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const map<string, string>& opts)
+unique_ptr<GeoIPInterface> GeoIPInterface::makeMMDBInterface([[maybe_unused]] const string& fname, [[maybe_unused]] const string& fname_domain, [[maybe_unused]] const string& fname_isp, [[maybe_unused]] const map<string, string>& opts)
 {
   throw PDNSException("libmaxminddb support not compiled in");
 }
-
 #endif
