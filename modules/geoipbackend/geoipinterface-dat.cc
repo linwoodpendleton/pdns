@@ -61,8 +61,8 @@ struct geoipregion_deleter
 class GeoIPInterfaceDAT : public GeoIPInterface
 {
 public:
-   GeoIPInterfaceDAT(const string& fname, const string& modeStr)
-    {
+     GeoIPInterfaceDAT(const string& fname, const string& fname_domain, const string& fname_isp, const string& modeStr)
+     {
       int flags;
       if (modeStr == "standard")
         flags = GEOIP_STANDARD;
