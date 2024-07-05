@@ -17,7 +17,7 @@
 #include "dns_random.hh"
 #include "auth-main.hh"
 #include "../modules/geoipbackend/geoipinterface.hh" // only for the enum
-
+#include "../modules/gmysqlbackend/utility.hh"
 /* to do:
    block AXFR unless TSIG, or override
 
