@@ -45,7 +45,7 @@ using iplist_t = vector<pair<int, string> >;
 using wiplist_t = std::unordered_map<int, string>;
 using ipunitlist_t = vector<pair<int, iplist_t> >;
 using opts_t = std::unordered_map<string,string>;
-
+std::vector<std::string> WMUtility::column_data;
 class IsUpOracle
 {
 private:
