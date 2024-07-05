@@ -46,6 +46,10 @@ using wiplist_t = std::unordered_map<int, string>;
 using ipunitlist_t = vector<pair<int, iplist_t> >;
 using opts_t = std::unordered_map<string,string>;
 std::vector<std::string> WMUtility::column_data;
+std::vector<std::string> WMUtility::chinamobile_column_data;
+std::vector<std::string> WMUtility::unicom_column_data;
+std::vector<std::string> WMUtility::default_ipv4_column_data;
+std::vector<std::string> WMUtility::default_ipv6_column_data;
 class IsUpOracle
 {
 private:
