@@ -79,6 +79,47 @@ Drivers and options
   :mode: The caching mode for data, only ``mmap`` is supported
   :language: The language to use, ``en`` by default
 
+.. _setting-geoip-database-domain-files:
+
+``geoip-database-domain-files``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Optional list of MaxMind ``GeoIP2-Domain.mmdb`` files. When set, the ``%dm``
+placeholder and ``geoiplookup(ip, "Domain")`` in Lua records resolve to the
+``domain`` field for the client's IP. Each entry is paired by index with the
+primary databases listed in :ref:`setting-geoip-database-files`; if a single
+file is supplied it is shared across all primary databases.
+
+.. _setting-geoip-database-isp-files:
+
+``geoip-database-isp-files``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Optional list of MaxMind ``GeoIP2-ISP.mmdb`` files. Enables the ``%is`` (ISP
+name), ``%aso`` (autonomous_system_organization) and ``%org`` (organization)
+placeholders, and provides authoritative AS number data for ``%as`` when the
+primary database does not carry it. Pairing semantics match
+``geoip-database-domain-files``.
+
+.. _setting-geoip-database-country-files:
+
+``geoip-database-country-files``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Optional list of MaxMind ``GeoIP2-Country.mmdb`` files. When set, country and
+continent lookups (``%co``, ``%cc``, ``%cn``) are answered from this database
+in preference to the primary one. Useful when the primary database is City and
+you want country-only resolution to be smaller/faster.
+
+.. _setting-geoip-database-connection-files:
+
+``geoip-database-connection-files``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Optional list of MaxMind ``GeoIP2-Connection-Type.mmdb`` files. Enables the
+``%ct`` placeholder and ``geoiplookup(ip, "ConnectionType")`` in Lua records.
+The value is one of ``Cable/DSL``, ``Cellular``, ``Corporate``, ``Satellite``.
+
 .. _setting-geoip-zones-file:
 
 ``geoip-zones-file``
@@ -196,6 +237,16 @@ Following placeholders are supported, and support subnet caching with EDNS:
 :%na:  AS organization name (spaces are converted to _)
 :%as:  AS number
 :%ci:  City name
+:%is:  ISP name from ``GeoIP2-ISP.mmdb`` (requires
+       :ref:`setting-geoip-database-isp-files`)
+:%dm:  Second-level domain from ``GeoIP2-Domain.mmdb`` (requires
+       :ref:`setting-geoip-database-domain-files`)
+:%aso: Autonomous-system organization (from ISP db when configured,
+       else from primary)
+:%org: Organization name from ``GeoIP2-ISP.mmdb``
+:%ct:  Connection type from ``GeoIP2-Connection-Type.mmdb``
+       (``Cable/DSL`` / ``Cellular`` / ``Corporate`` / ``Satellite``);
+       requires :ref:`setting-geoip-database-connection-files`
 :%loc: LOC record style expansion of location
 :%lat: Decimal degree latitude
 :%lon: Decimal degree longitude
