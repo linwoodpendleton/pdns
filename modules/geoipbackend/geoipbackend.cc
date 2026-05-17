@@ -860,6 +860,10 @@ string GeoIPBackend::format2str(const filevec_t& geoip_files, string sformat, co
     else if (!sformat.compare(cur, 3, "%af")) {
       rep = (addr.isIPv6() ? "v6" : "v4");
     }
+    else if (!sformat.compare(cur, 4, "%aso")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ASO, tmp_gl);
+      nrep = 4;
+    }
     else if (!sformat.compare(cur, 3, "%as")) {
       rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ASn, tmp_gl);
     }
