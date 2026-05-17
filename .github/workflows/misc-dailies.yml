@@ -12,6 +12,7 @@ env:
 
 jobs:
   el7-devtoolset:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     runs-on: ubuntu-22.04
 
@@ -28,6 +29,7 @@ jobs:
         fi
 
   check-debian-autoremovals:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     runs-on: ubuntu-22.04
     steps:
@@ -41,6 +43,7 @@ jobs:
       run: ./build-scripts/check-debian-autoremovals.py
 
   coverity-auth:
+    if: github.repository_owner == 'PowerDNS'
     name: coverity scan of the auth
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     uses: PowerDNS/pdns/.github/workflows/coverity.yml@master
@@ -51,6 +54,7 @@ jobs:
       COVERITY_EMAIL: ${{ secrets.coverity_email }}
 
   coverity-dnsdist:
+    if: github.repository_owner == 'PowerDNS'
     name: coverity scan of dnsdist
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     uses: PowerDNS/pdns/.github/workflows/coverity.yml@master
@@ -61,6 +65,7 @@ jobs:
       COVERITY_EMAIL: ${{ secrets.coverity_email }}
 
   coverity-rec:
+    if: github.repository_owner == 'PowerDNS'
     name: coverity scan of the rec
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     uses: PowerDNS/pdns/.github/workflows/coverity.yml@master
@@ -71,6 +76,7 @@ jobs:
       COVERITY_EMAIL: ${{ secrets.coverity_email }}
 
   run-rec-bulk-test-on-ubicloud:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.UBICLOUD_DAILY_REC_BULKTEST == '1' }}
     name: Run Recursor (master) Bulk Test On Ubicloud
     runs-on: ubicloud-standard-8-ubuntu-2404

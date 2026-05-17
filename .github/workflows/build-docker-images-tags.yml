@@ -25,6 +25,7 @@ permissions:
 
 jobs:
   prepare:
+    if: github.repository_owner == 'PowerDNS'
     env:
       REF_NAME: ${{ github.ref_name }}
     runs-on: ubuntu-24.04
@@ -41,6 +42,7 @@ jobs:
         id: get-image-description
 
   call-build-image-auth:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: startsWith(github.ref_name, 'auth')
     needs: prepare
@@ -62,6 +64,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   call-build-image-recursor:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: startsWith(github.ref_name, 'rec')
     needs: prepare
@@ -83,6 +86,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   call-build-image-dnsdist:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: startsWith(github.ref_name, 'dnsdist')
     needs: prepare

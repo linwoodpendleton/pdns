@@ -55,6 +55,7 @@ permissions: # least privileges, see https://docs.github.com/en/actions/using-wo
 
 jobs:
   validate-push-image:
+    if: github.repository_owner == 'PowerDNS'
     name: Check only images built from tags and master are pushed
     runs-on: ubuntu-24.04
     permissions:
@@ -74,6 +75,7 @@ jobs:
           [[ "${REF}" == "master" ]] || git describe --tags --exact-match
 
   prepare-runner-os-list:
+    if: github.repository_owner == 'PowerDNS'
     name: generate list of runner-architecture pairs based on the input "platforms"
     runs-on: ubuntu-24.04
     permissions:
@@ -92,6 +94,7 @@ jobs:
           echo "runnerlist=$(jo -a ${runner_os_arch[@]})" >> "$GITHUB_OUTPUT"
 
   build:
+    if: github.repository_owner == 'PowerDNS'
     name: build ${{ matrix.platform.arch }} docker image for a product
     runs-on: ${{ matrix.platform.runner }}
     needs:
@@ -163,6 +166,7 @@ jobs:
           retention-days: 1
 
   publish-tag:
+    if: github.repository_owner == 'PowerDNS'
     name: Generate and publish tag for multi-platform image
     runs-on: ubuntu-24.04
     if: ${{ inputs.push }}
@@ -220,6 +224,7 @@ jobs:
         run: cosign sign --yes ${TAG}
 
   test-uploaded-images:
+    if: github.repository_owner == 'PowerDNS'
     name: test ${{ matrix.platform.arch }} uploaded images
     if: ${{ inputs.push }}
     needs:

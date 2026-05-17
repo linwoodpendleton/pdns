@@ -14,6 +14,7 @@ permissions: # least privileges, see https://docs.github.com/en/actions/using-wo
 
 jobs:
   build:
+    if: github.repository_owner == 'PowerDNS'
     name: call the workflow to build packages
     uses: PowerDNS/pdns/.github/workflows/builder.yml@master
     with:

@@ -14,6 +14,7 @@ permissions: # least privileges, see https://docs.github.com/en/actions/using-wo
 
 jobs:
   call-build-image-auth:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: ${{ vars.SCHEDULED_DOCKER }}
     with:
@@ -31,6 +32,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   call-build-image-recursor:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: ${{ vars.SCHEDULED_DOCKER }}
     with:
@@ -48,6 +50,7 @@ jobs:
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
   call-build-image-dnsdist:
+    if: github.repository_owner == 'PowerDNS'
     uses: PowerDNS/pdns/.github/workflows/build-docker-images.yml@master
     if: ${{ vars.SCHEDULED_DOCKER }}
     with:

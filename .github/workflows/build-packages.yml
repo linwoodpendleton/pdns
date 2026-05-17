@@ -64,6 +64,7 @@ env:
 
 jobs:
   prepare:
+    if: github.repository_owner == 'PowerDNS'
     name: generate OS runner and arch list
     runs-on: ubuntu-24.04
     outputs:
@@ -110,6 +111,7 @@ jobs:
         run: echo "publish-packages=$([[ "${REF}" == "master" || "${IS_RELEASE}" == "YES" ]] && echo 'yes' || echo 'no')" >> "$GITHUB_OUTPUT"
 
   build:
+    if: github.repository_owner == 'PowerDNS'
     needs: prepare
     name: for ${{ matrix.os }} ${{ inputs.product }} (${{ inputs.ref }}) on ${{ matrix.runner-os }}
     runs-on: ${{ matrix.runner-os }}
@@ -225,6 +227,7 @@ jobs:
           rsync -4rlptD built_pkgs/* "$RSYNCTARGET"
 
   check-hashes:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build]
     name: Check if hashes were created for all requested targets
     runs-on: ubuntu-24.04
@@ -247,6 +250,7 @@ jobs:
         run: if ! diff -q /tmp/build-outputs.txt /tmp/os-inputs.txt; then exit 1; fi
 
   provenance-pkgs:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build]
     name: Generate provenance for ${{ inputs.product }} (${{ inputs.ref }}) for ${{ matrix.os }}
     strategy:
@@ -265,6 +269,7 @@ jobs:
       private-repository: true
 
   provenance-src:
+    if: github.repository_owner == 'PowerDNS'
     needs: build
     name: Generate provenance for ${{ inputs.product }} (${{ inputs.ref }}) source tarball
     permissions:
@@ -279,6 +284,7 @@ jobs:
       private-repository: true
 
   upload-provenance:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build, provenance-src, provenance-pkgs]
     name: Upload the provenance artifacts to downloads.powerdns.com
     runs-on: ubuntu-24.04
@@ -319,6 +325,7 @@ jobs:
           rsync -4rlptD slsa/* "$RSYNCTARGET"
 
   upload-packages:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build, provenance-src, provenance-pkgs]
     continue-on-error: true
     if: ${{ needs.prepare.outputs.publish-packages == 'yes' }}
@@ -393,6 +400,7 @@ jobs:
         run: echo "completed=yes" >> $GITHUB_OUTPUT
 
   upload-build-dependencies:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build, provenance-src, provenance-pkgs]
     continue-on-error: true
     if: ${{ needs.prepare.outputs.publish-packages == 'yes' }}
@@ -438,6 +446,7 @@ jobs:
           destination-path: ${{ env.PRODUCT }}/${{ env.VERSION }}
 
   upload-src-and-provenance-files:
+    if: github.repository_owner == 'PowerDNS'
     needs: [build, provenance-src, provenance-pkgs]
     name: Upload source and provenance files
     continue-on-error: true
@@ -487,6 +496,7 @@ jobs:
 
   # RPM packages are published in the step upload-packages as they are separated by distro/release/arch
   publish-deb-packages:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build, upload-packages]
     if: ${{ needs.upload-packages.outputs.check-finished == 'yes' }}
     continue-on-error: true
@@ -525,6 +535,7 @@ jobs:
         run: echo "completed=yes" >> $GITHUB_OUTPUT
 
   test-packages:
+    if: github.repository_owner == 'PowerDNS'
     needs: [prepare, build, upload-packages, publish-deb-packages]
     continue-on-error: true
     name: Test packages

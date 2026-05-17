@@ -36,6 +36,7 @@ env:
 
 jobs:
   get-runner-container-image:
+    if: github.repository_owner == 'PowerDNS'
     name: generate docker runner image name
     runs-on: ubuntu-24.04
     outputs:
@@ -51,6 +52,7 @@ jobs:
           echo "tag=$DEFAULT_IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
   build-auth:
+    if: github.repository_owner == 'PowerDNS'
     name: build auth (${{ matrix.builder }})
     if: ${{ !github.event.schedule || vars.SCHEDULED_JOBS_BUILD_AND_TEST_ALL }}
     runs-on: ubuntu-24.04
@@ -133,6 +135,7 @@ jobs:
           retention-days: 1
 
   build-recursor:
+    if: github.repository_owner == 'PowerDNS'
     name: build recursor
     if: ${{ !github.event.schedule || vars.SCHEDULED_JOBS_BUILD_AND_TEST_ALL }}
     runs-on: ubuntu-24.04
@@ -210,6 +213,7 @@ jobs:
           retention-days: 1
 
   build-dnsdist:
+    if: github.repository_owner == 'PowerDNS'
     name: build dnsdist
     if: ${{ !github.event.schedule || vars.SCHEDULED_JOBS_BUILD_AND_TEST_ALL }}
     runs-on: ${{ ( vars.REPOSITORY_USE_UBICLOUD == '1' ) && format('ubicloud-standard-4{0}-ubuntu-2404', matrix.architecture_suffix) || format('ubuntu-24.04{0}', matrix.architecture_suffix) }}
@@ -314,6 +318,7 @@ jobs:
           retention-days: 1
 
   test-auth-api:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-auth
       - get-runner-container-image
@@ -388,6 +393,7 @@ jobs:
           fail-on-error: false
 
   test-auth-backend:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-auth
       - get-runner-container-image
@@ -524,6 +530,7 @@ jobs:
           fail-on-error: false
 
   test-ixfrdist:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-auth
       - get-runner-container-image
@@ -570,6 +577,7 @@ jobs:
           fail-on-error: false
 
   test-recursor-api:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-recursor
       - get-runner-container-image
@@ -625,6 +633,7 @@ jobs:
           fail-on-error: false
 
   test-recursor-regression:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-recursor
       - get-runner-container-image
@@ -682,6 +691,7 @@ jobs:
           fail-on-error: false
 
   test-recursor-bulk:
+    if: github.repository_owner == 'PowerDNS'
     name: 'test rec *mini* bulk'
     needs:
       - build-recursor
@@ -738,6 +748,7 @@ jobs:
           fail-on-error: false
 
   test-recursor-ubicloud-bulk:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ ! contains(needs.get-runner-container-image.outputs.id, 'debian-11') && ( vars.REC_BULKTEST_USE_UBICLOUD == '1' || github.repository == 'PowerDNS/pdns' ) }}
     name: 'test rec ubicloud bulk'
     needs:
@@ -791,6 +802,7 @@ jobs:
       #    fail-on-error: false
 
   test-dnsdist-regression:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-dnsdist
       - get-runner-container-image
@@ -847,6 +859,7 @@ jobs:
           fail-on-error: false
 
   openapi-syntax-check:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ (!github.event.schedule || vars.SCHEDULED_JOBS_BUILD_AND_TEST_ALL) && ! contains(needs.get-runner-container-image.outputs.id, 'debian-11') }}
     runs-on: ubuntu-24.04
     needs:
@@ -872,6 +885,7 @@ jobs:
       - run: ${{ env.INV_CMD }} openapi-syntax-check
 
   collect:
+    if: github.repository_owner == 'PowerDNS'
     needs:
       - build-auth
       - build-dnsdist

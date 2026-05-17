@@ -10,6 +10,7 @@ permissions: # least privileges, see https://docs.github.com/en/actions/using-wo
 
 jobs:
   build:
+    if: github.repository_owner == 'PowerDNS'
     name: Verify source code formatting; check Makefile.am sort order
     # on an ubuntu-24.04 VM
     runs-on: ubuntu-24.04

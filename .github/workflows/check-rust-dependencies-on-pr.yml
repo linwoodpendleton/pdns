@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   audit:
+    if: github.repository_owner == 'PowerDNS'
     runs-on: ubuntu-latest
     name: Rust dependencies check
     steps:

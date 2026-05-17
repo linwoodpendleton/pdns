@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   audit:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_MISC_DAILIES }}
     runs-on: ubuntu-latest
     name: Rust deps (${{ matrix.branch }})

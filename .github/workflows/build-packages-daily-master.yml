@@ -12,6 +12,7 @@ permissions:
 
 jobs:
   call-build-packages-auth:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_PACKAGES_DAILY }}
     uses: PowerDNS/pdns/.github/workflows/build-packages.yml@master
     with:
@@ -40,6 +41,7 @@ jobs:
       PULP_PDNS_GPG_PUBKEY: ${{ secrets.PULP_PDNS_GPG_PUBKEY }}
 
   call-build-packages-dnsdist:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_PACKAGES_DAILY }}
     uses: PowerDNS/pdns/.github/workflows/build-packages.yml@master
     with:
@@ -68,6 +70,7 @@ jobs:
       PULP_PDNS_GPG_PUBKEY: ${{ secrets.PULP_PDNS_GPG_PUBKEY }}
 
   call-build-packages-rec:
+    if: github.repository_owner == 'PowerDNS'
     if: ${{ vars.SCHEDULED_PACKAGES_DAILY }}
     uses: PowerDNS/pdns/.github/workflows/build-packages.yml@master
     with:
