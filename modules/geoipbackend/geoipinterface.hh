@@ -36,7 +36,15 @@ public:
     Country2,
     Name,
     Region,
-    Location
+    Location,
+    // Extensions for split-by-province/ISP/connection-type routing.
+    // Keep these last so existing serialized values in zone files remain valid.
+    Domain,
+    ISP,
+    ASO,
+    ORG,
+    ASN2,
+    ConnectionType,
   };
 
   virtual bool queryCountry(string& ret, GeoIPNetmask& gl, const string& ip) = 0;
@@ -62,11 +70,40 @@ public:
                                std::optional<int>& alt, std::optional<int>& prec)
     = 0;
 
+  // Optional extension queries backed by extra MaxMind DBs (Domain, ISP,
+  // Connection-Type). Backends without these DBs simply return false.
+  virtual bool queryDomain(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryDomainV6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryISP(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryISPV6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryASO(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryASOV6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryORG(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryORGV6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryASN2(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryASN2V6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryConnectionType(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+  virtual bool queryConnectionTypeV6(string& /*ret*/, GeoIPNetmask& /*gl*/, const string& /*ip*/) { return false; }
+
   virtual ~GeoIPInterface() = default;
 
-  static unique_ptr<GeoIPInterface> makeInterface(Logr::log_t slog, const string& dbStr);
+  // dbStr is the primary (City/Country) database path. The remaining string
+  // arguments are optional paths to auxiliary MaxMind databases (Domain, ISP,
+  // dedicated Country, Connection-Type). Empty string means "not configured".
+  static unique_ptr<GeoIPInterface> makeInterface(Logr::log_t slog,
+                                                  const string& dbStr,
+                                                  const string& dbDomainStr = "",
+                                                  const string& dbISPStr = "",
+                                                  const string& dbCountryStr = "",
+                                                  const string& dbConnectionStr = "");
 
 private:
-  static unique_ptr<GeoIPInterface> makeMMDBInterface(Logr::log_t slog, const string& fname, const map<string, string>& opts);
+  static unique_ptr<GeoIPInterface> makeMMDBInterface(Logr::log_t slog,
+                                                     const string& fname,
+                                                     const string& fnameDomain,
+                                                     const string& fnameISP,
+                                                     const string& fnameCountry,
+                                                     const string& fnameConnection,
+                                                     const map<string, string>& opts);
   static unique_ptr<GeoIPInterface> makeDATInterface(const string& fname, const map<string, string>& opts);
 };

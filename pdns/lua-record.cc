@@ -1679,7 +1679,14 @@ static std::unordered_map<std::string, int> lua_variables{
   {"Country2", GeoIPInterface::GeoIPQueryAttribute::Country2},
   {"Name", GeoIPInterface::GeoIPQueryAttribute::Name},
   {"Region", GeoIPInterface::GeoIPQueryAttribute::Region},
-  {"Location", GeoIPInterface::GeoIPQueryAttribute::Location}
+  {"Location", GeoIPInterface::GeoIPQueryAttribute::Location},
+  // Extended attributes for province/ISP/connection-type aware routing.
+  {"Domain", GeoIPInterface::GeoIPQueryAttribute::Domain},
+  {"ISP", GeoIPInterface::GeoIPQueryAttribute::ISP},
+  {"ASO", GeoIPInterface::GeoIPQueryAttribute::ASO},
+  {"ORG", GeoIPInterface::GeoIPQueryAttribute::ORG},
+  {"ASN2", GeoIPInterface::GeoIPQueryAttribute::ASN2},
+  {"ConnectionType", GeoIPInterface::GeoIPQueryAttribute::ConnectionType},
 };
 
 static void setupLuaRecords(Logr::log_t slog, LuaContext& lua)

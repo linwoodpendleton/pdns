@@ -415,9 +415,35 @@ void GeoIPBackend::initialize(state_t& state)
 
   if (getArg("database-files").empty() == false) {
     vector<string> files;
+    vector<string> files_domain;
+    vector<string> files_isp;
+    vector<string> files_country;
+    vector<string> files_connection;
     stringtok(files, getArg("database-files"), " ,\t\r\n");
-    for (auto const& file : files) {
-      state.geoip_files.push_back(GeoIPInterface::makeInterface(d_slog, file));
+    stringtok(files_domain, getArg("database-domain-files"), " ,\t\r\n");
+    stringtok(files_isp, getArg("database-isp-files"), " ,\t\r\n");
+    stringtok(files_country, getArg("database-country-files"), " ,\t\r\n");
+    stringtok(files_connection, getArg("database-connection-files"), " ,\t\r\n");
+
+    // Auxiliary databases (Domain / ISP / Country / Connection-Type) are
+    // shared across every primary database. We pass the first entry of each
+    // list (empty if not configured) into every primary interface. Operators
+    // who genuinely need multiple aux DBs can supply matching lists of equal
+    // length and we'll pair them by index.
+    auto pickAux = [](const vector<string>& list, size_t idx) -> string {
+      if (list.empty()) return string{};
+      if (idx < list.size()) return list[idx];
+      return list.front();
+    };
+
+    for (size_t idx = 0; idx < files.size(); ++idx) {
+      state.geoip_files.push_back(
+        GeoIPInterface::makeInterface(d_slog,
+                                      files[idx],
+                                      pickAux(files_domain, idx),
+                                      pickAux(files_isp, idx),
+                                      pickAux(files_country, idx),
+                                      pickAux(files_connection, idx)));
     }
   }
 
@@ -698,6 +724,42 @@ static string queryGeoIP(const GeoIPBackend::filevec_t& geoip_files, const Netma
       else
         found = gi->queryCity(val, gl, ip);
       break;
+    case GeoIPInterface::Domain:
+      if (addr.isIPv6())
+        found = gi->queryDomainV6(val, gl, ip);
+      else
+        found = gi->queryDomain(val, gl, ip);
+      break;
+    case GeoIPInterface::ISP:
+      if (addr.isIPv6())
+        found = gi->queryISPV6(val, gl, ip);
+      else
+        found = gi->queryISP(val, gl, ip);
+      break;
+    case GeoIPInterface::ASO:
+      if (addr.isIPv6())
+        found = gi->queryASOV6(val, gl, ip);
+      else
+        found = gi->queryASO(val, gl, ip);
+      break;
+    case GeoIPInterface::ORG:
+      if (addr.isIPv6())
+        found = gi->queryORGV6(val, gl, ip);
+      else
+        found = gi->queryORG(val, gl, ip);
+      break;
+    case GeoIPInterface::ASN2:
+      if (addr.isIPv6())
+        found = gi->queryASN2V6(val, gl, ip);
+      else
+        found = gi->queryASN2(val, gl, ip);
+      break;
+    case GeoIPInterface::ConnectionType:
+      if (addr.isIPv6())
+        found = gi->queryConnectionTypeV6(val, gl, ip);
+      else
+        found = gi->queryConnectionType(val, gl, ip);
+      break;
     case GeoIPInterface::Location:
       double lat = 0, lon = 0;
       std::optional<int> alt;
@@ -809,6 +871,23 @@ string GeoIPBackend::format2str(const filevec_t& geoip_files, string sformat, co
     }
     else if (!sformat.compare(cur, 3, "%ci")) {
       rep = queryGeoIP(geoip_files, addr, GeoIPInterface::City, tmp_gl);
+    }
+    else if (!sformat.compare(cur, 3, "%is")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ISP, tmp_gl);
+    }
+    else if (!sformat.compare(cur, 3, "%dm")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::Domain, tmp_gl);
+    }
+    else if (!sformat.compare(cur, 3, "%ct")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ConnectionType, tmp_gl);
+    }
+    else if (!sformat.compare(cur, 4, "%aso")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ASO, tmp_gl);
+      nrep = 4;
+    }
+    else if (!sformat.compare(cur, 4, "%org")) {
+      rep = queryGeoIP(geoip_files, addr, GeoIPInterface::ORG, tmp_gl);
+      nrep = 4;
     }
     else if (!sformat.compare(cur, 4, "%loc")) {
       char ns, ew;
@@ -1247,6 +1326,10 @@ public:
   {
     declare(suffix, "zones-file", "YAML file to load zone(s) configuration", "");
     declare(suffix, "database-files", "File(s) to load geoip data from ([driver:]path[;opt=value]", "");
+    declare(suffix, "database-domain-files", "Optional MaxMind GeoIP2-Domain MMDB file(s) for %dm placeholder", "");
+    declare(suffix, "database-isp-files", "Optional MaxMind GeoIP2-ISP MMDB file(s) for %is/%aso/%org placeholders", "");
+    declare(suffix, "database-country-files", "Optional MaxMind GeoIP2-Country MMDB file(s) (preferred over City for %co/%cn when set)", "");
+    declare(suffix, "database-connection-files", "Optional MaxMind GeoIP2-Connection-Type MMDB file(s) for %ct placeholder", "");
     declare(suffix, "dnssec-keydir", "Directory to hold dnssec keys (also turns DNSSEC on)", "");
   }
 
